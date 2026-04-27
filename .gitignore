@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Logs
+*.log
+logs/
+
+# State files (contêm dados locais do usuário)
+~/.vault/
+*.state.json
+*.checkpoint.json
+*.dirty.json
+notes_ids.json
+
+# Arquivos de configuração com dados pessoais
+config.py
+*.local.py
+
+# Arquivos compactados (podem conter dados sensíveis)
+*.zip
+*.tar.gz
+*.rar
+
+# Certificados e chaves
+*.pem
+*.key
+*.crt
+*.p12
+
+# Ambiente
+.env
+.env.local
+.env.*.local
