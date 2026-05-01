@@ -17,44 +17,14 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-# ─── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
-VAULT_PATH   = os.path.expanduser("~/VaultAI")
-DIRTY_FILE   = os.path.expanduser("~/.vault/vault_dirty.json")
-LOG_FILE     = os.path.expanduser("~/.vault/organize.log")
-LIXO_DIR     = "_lixo"
-MIN_CONTENT_CHARS = 0   # 0 = detecção por conteúdo desativada (só por nome)
-# ─────────────────────────────────────────────────────────────────────────────
-
-LIXO_NAME_PATTERNS = [
-    r'^\{\.md$', r'^…\.md$', r'^,\.md$', r'^---\.md$', r'^--\.md$',
-    r'^sem-nome\.md$', r'^Nova Nota\.md$', r'^New Note\.md$',
-    r'^OK\.md$', r'^Msg\.md$', r'^asdasd.*\.md$', r'^uvy vreu.*\.md$',
-    r'^[a-z]{1,3}\.md$',
-]
-
-DOMAIN_KEYWORDS = {
-    "outsystems": ["outsystems","odc","reactive","service action","aggregate",
-                   "forge","lifetime","servicestudio"],
-    "cliente_energia":  ["cliente_energia","motorista","canal motorista","pda","totem",
-                   "autonomia","parceiro_tech","cliente_energia","cliente_energia"],
-    "java":       ["java","spring boot","hibernate","jpa","maven","gradle",
-                   "tomcat","jboss","vaadin"],
-    "python":     ["python","pandas","sklearn","numpy","jupyter",
-                   "tensorflow","nltk","virtualenv"],
-    "aws":        ["aws","amplify","s3","lambda","rekognition","cognito",
-                   "liveness","iam"],
-    "ia":         ["llm","claude","openai","gpt","ollama","llama",
-                   "rag","embedding","agentic"],
-    "sql":        ["select * from","insert into","update ","delete from",
-                   "postgresql","mysql","sqlite"],
-    "git":        ["git commit","git push","git pull","github","branch",
-                   "pull request"],
-    "docker":     ["docker","container","compose","dockerfile","kubernetes"],
-    "scrum":      ["scrum","sprint","backlog","product owner","pspo",
-                   "retrospectiva","user story"],
-    "cliente_documento":    ["cliente_documento","extração cnh","rekognition","liveness","rollup"],
-    "cliente_industria":       ["cliente_industria","senai","sesi","unidade consumidora","parcela ativa"],
-}
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from config import (
+    VAULT_PATH, DIRTY_FILE, ORGANIZE_LOG as LOG_FILE,
+    LIXO_DIR, MIN_CONTENT_CHARS,
+    LIXO_NAME_PATTERNS, DOMAIN_KEYWORDS,
+)
 
 
 def ensure_dirs():
@@ -73,11 +43,17 @@ def load_json(path: str) -> dict:
     p = Path(path)
     return json.loads(p.read_text()) if p.exists() else {}
 
+_FRONTMATTER_RE = re.compile(
+    r'^\s*---[ \t]*[\r\n]+'   # --- de abertura (com possível \r\n)
+    r'.*?'                     # corpo do frontmatter (lazy, qualquer coisa)
+    r'[\r\n]---[ \t]*[\r\n]*', # --- de fechamento
+    re.DOTALL,
+)
+
 def read_content(fp: Path) -> str:
     try:
         raw = fp.read_text(encoding="utf-8", errors="ignore")
-        # Remove frontmatter YAML — cobre ---\n...\n---\n e ---\n...\n---\n\n
-        raw = re.sub(r'^---\s*\n.*?\n---\s*\n', '', raw, flags=re.DOTALL)
+        raw = _FRONTMATTER_RE.sub('', raw, count=1)
         return raw.strip()
     except Exception:
         return ""
@@ -114,9 +90,11 @@ def get_domains(text: str) -> set:
     return found
 
 def add_links_section(content: str, links: list) -> str:
-    # Remove seção anterior gerada automaticamente
-    content = re.sub(r'\n\n---\n## Links relacionados\n.*$', '',
-                     content, flags=re.DOTALL)
+    # Remove seção anterior gerada automaticamente (tolerante a \r\n)
+    content = re.sub(
+        r'[\r\n]{2}---[\r\n]+## Links relacionados[\r\n]+.*$',
+        '', content, flags=re.DOTALL,
+    )
     content = content.rstrip()
     new_links = sorted(set(l for l in links if f"[[{l}]]" not in content))
     if not new_links:
