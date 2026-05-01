@@ -19,18 +19,51 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# ─── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
-VAULT_PATH   = os.path.expanduser("~/VaultAI")
-SYNC_ROOT    = ""
-STATE_FILE   = os.path.expanduser("~/.vault/notes_state.json")
-IDS_FILE     = os.path.expanduser("~/.vault/notes_ids.json")
-DIRTY_FILE       = os.path.expanduser("~/.vault/vault_dirty.json")
-CHECKPOINT_FILE  = os.path.expanduser("~/.vault/sync_checkpoint.json")
-LOG_FILE         = os.path.expanduser("~/.vault/sync.log")
-TIMEZONE     = "America/Sao_Paulo"
-FLAT_FOLDERS = {"notes", "notas", "todas (icloud)", "all icloud", "icloud"}
-SEP_BODY     = "||VAULTBODY||"   # impossível aparecer em conteúdo de nota
-SEP_NOTE     = "||VAULTNOTE||"   # impossível aparecer em conteúdo de nota
+# Importa configuração centralizada; permite override via variáveis de ambiente
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from config import (
+    VAULT_PATH, SYNC_ROOT, STATE_FILE, IDS_FILE, DIRTY_FILE,
+    CHECKPOINT_FILE, METRICS_FILE, SYNC_LOG as LOG_FILE,
+    TIMEZONE, FLAT_FOLDERS, FETCH_WORKERS, CHECKPOINT_EVERY,
+)
+
+# ─── CONSTANTES INTERNAS ──────────────────────────────────────────────────────
+SEP_BODY = "||VAULTBODY||"   # impossível aparecer em conteúdo de nota
+SEP_NOTE = "||VAULTNOTE||"   # impossível aparecer em conteúdo de nota
+
+# Importa markdownify se disponível; fallback para conversão manual
+try:
+    from markdownify import MarkdownConverter as _MDConverter
+
+    class _AppleNotesConverter(_MDConverter):
+        """Estende MarkdownConverter para suportar checklists do Apple Notes."""
+        def convert_li(self, el, text, parent_tags):
+            cls = ' '.join(
+                el.get('class', []) if isinstance(el.get('class'), list)
+                else [el.get('class', '')]
+            )
+            # Checa 'unchecked' antes de 'checked' (substring trap)
+            if 'unchecked' in cls:
+                return f'- [ ] {text.strip()}\n'
+            elif 'checked' in cls:
+                return f'- [x] {text.strip()}\n'
+            return super().convert_li(el, text, parent_tags)
+
+    def _md_lib(html: str) -> str:
+        result = _AppleNotesConverter(
+            heading_style='ATX',
+            bullets='-',
+            strip=['script', 'style'],
+        ).convert(html)
+        result = result.replace('\xa0', ' ')          # &nbsp; → espaço normal
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        return result.strip()
+
+    _HAS_MARKDOWNIFY = True
+except ImportError:
+    _HAS_MARKDOWNIFY = False
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── AppleScripts ──────────────────────────────────────────────────────────────
@@ -208,8 +241,6 @@ def sanitize(name: str) -> str:
 # Se o sync for interrompido (crash, sleep, Ctrl+C), a próxima execução
 # retoma de onde parou em vez de recomeçar do zero.
 
-CHECKPOINT_EVERY = 50  # salva estado a cada N notas gravadas
-
 def load_checkpoint() -> dict:
     """
     Retorna o checkpoint salvo ou {} se não existir / inválido.
@@ -293,19 +324,12 @@ def extract_images(html: str, attachments_dir: Path,
     return html_out, count[0]
 
 
-def html_to_markdown(html: str, attachments_dir: Path = None,
-                     note_title: str = "") -> str:
+def _html_to_markdown_fallback(html: str) -> str:
     """
-    Converte HTML do Apple Notes para Markdown.
-    Se attachments_dir for fornecido, extrai imagens base64 como arquivos
-    e insere links ![[filename]] no lugar.
+    Conversão HTML → Markdown via regex — usado quando markdownify não está
+    instalado. Cobre os casos mais comuns do Apple Notes.
     """
     t = html
-
-    # Extrai imagens antes de processar o HTML
-    if attachments_dir is not None:
-        t, n_imgs = extract_images(t, attachments_dir, note_title)
-
     t = re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1',   t, flags=re.DOTALL|re.I)
     t = re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1',  t, flags=re.DOTALL|re.I)
     t = re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1', t, flags=re.DOTALL|re.I)
@@ -313,18 +337,39 @@ def html_to_markdown(html: str, attachments_dir: Path = None,
     t = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', t, flags=re.DOTALL|re.I)
     t = re.sub(r'<i[^>]*>(.*?)</i>',   r'*\1*', t, flags=re.DOTALL|re.I)
     t = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', t, flags=re.DOTALL|re.I)
+    # unchecked antes de checked (substring trap)
+    t = re.sub(r'<li[^>]*class="[^"]*unchecked[^"]*"[^>]*>(.*?)</li>',
+               r'- [ ] \1', t, flags=re.DOTALL|re.I)
     t = re.sub(r'<li[^>]*class="[^"]*checked[^"]*"[^>]*>(.*?)</li>',
                r'- [x] \1', t, flags=re.DOTALL|re.I)
     t = re.sub(r'<li[^>]*>(.*?)</li>', r'- \1', t, flags=re.DOTALL|re.I)
     t = re.sub(r'<[ou]l[^>]*>|</[ou]l>', '', t, flags=re.I)
     t = re.sub(r'</p>|</div>|<br\s*/?>', '\n', t, flags=re.I)
     t = re.sub(r'<p[^>]*>|<div[^>]*>', '\n', t, flags=re.I)
-    t = re.sub(r'<[^>]+>', '', t)   # remove tags restantes (img sem base64, etc.)
+    t = re.sub(r'<[^>]+>', '', t)
     for e, r in [('&amp;','&'),('&lt;','<'),('&gt;','>'),
                  ('&nbsp;',' '),('&quot;','"'),('&#39;',"'")]:
         t = t.replace(e, r)
     t = re.sub(r'\n{3,}', '\n\n', t)
     return t.strip()
+
+
+def html_to_markdown(html: str, attachments_dir: Path = None,
+                     note_title: str = "") -> str:
+    """
+    Converte HTML do Apple Notes para Markdown.
+    Usa markdownify se instalado; caso contrário, usa conversão manual via regex.
+    Se attachments_dir for fornecido, extrai imagens base64 como arquivos
+    e insere links ![[filename]] no lugar.
+    """
+    # Extrai imagens base64 ANTES da conversão (preserva os ![[links]])
+    t = html
+    if attachments_dir is not None:
+        t, _ = extract_images(t, attachments_dir, note_title)
+
+    if _HAS_MARKDOWNIFY:
+        return _md_lib(t)
+    return _html_to_markdown_fallback(t)
 
 # ── Árvore de pastas ──────────────────────────────────────────────────────────
 
@@ -372,16 +417,27 @@ AS_FETCH_ONE = r"""
 tell application "Notes"
     set matchNote to first note whose id is "{note_id}"
     set mdate to modification date of matchNote
-    return (mdate as string) & "||VAULTDATE||" & body of matchNote
+    -- Tags: disponível a partir do macOS 13 Ventura.
+    -- try/on error garante compatibilidade com versões mais antigas.
+    set tagStr to ""
+    try
+        set tagList to tags of matchNote
+        repeat with aTag in tagList
+            if tagStr is "" then
+                set tagStr to (name of aTag)
+            else
+                set tagStr to tagStr & "," & (name of aTag)
+            end if
+        end repeat
+    end try
+    return (mdate as string) & "||VAULTDATE||" & tagStr & "||VAULTTAGS||" & body of matchNote
 end tell
 """
 
-FETCH_WORKERS = 8
-
 def fetch_one(note_id: str, timeout: int = 30) -> tuple:
     """
-    Busca corpo + data de modificação de uma nota por ID.
-    Retorna (note_id, body_html, mod_date) ou (note_id, "", "") em caso de erro.
+    Busca corpo, tags e data de modificação de uma nota por ID.
+    Retorna (note_id, body_html, mod_date, tags_list) ou ("", "", [], "") em caso de erro.
     """
     script = AS_FETCH_ONE.replace("{note_id}", note_id)
     try:
@@ -391,19 +447,25 @@ def fetch_one(note_id: str, timeout: int = 30) -> tuple:
         )
         if r.returncode == 0:
             out = r.stdout
+            if "||VAULTDATE||" in out and "||VAULTTAGS||" in out:
+                mod_date, rest  = out.split("||VAULTDATE||", 1)
+                tag_str, body   = rest.split("||VAULTTAGS||", 1)
+                tags = [t.strip() for t in tag_str.split(",") if t.strip()]
+                return note_id, body, mod_date.strip(), tags
+            # Fallback: formato antigo sem tags (nunca deve acontecer, mas defensivo)
             if "||VAULTDATE||" in out:
                 mod_date, body = out.split("||VAULTDATE||", 1)
-                return note_id, body, mod_date.strip()
-            return note_id, out, ""
-        return note_id, "", ""
+                return note_id, body, mod_date.strip(), []
+            return note_id, out, "", []
+        return note_id, "", "", []
     except Exception:
-        return note_id, "", ""
+        return note_id, "", "", []
 
 
 def fetch_needed(pending: list, folder_tree: dict) -> dict:
     """
     Busca corpos em paralelo.
-    Retorna { note_id: (body_html, mod_date_from_fetch) }
+    Retorna { note_id: (body_html, mod_date_from_fetch, tags) }
     A mod_date vem do mesmo AppleScript que o corpo — mesma fonte, sem divergência.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -429,9 +491,9 @@ def fetch_needed(pending: list, folder_tree: dict) -> dict:
             label   = "/".join(segs[-2:])
 
             try:
-                nid, body, mod_date = future.result()
+                nid, body, mod_date, tags = future.result()
                 if body:
-                    bodies[nid] = (body, mod_date)
+                    bodies[nid] = (body, mod_date, tags)
                 else:
                     failed += 1
             except Exception:
@@ -466,10 +528,12 @@ def note_is_ours(fp: Path) -> bool:
         return False
 
 def write_note(title: str, segments: list, body_html: str,
-               mod_date: str, note_id: str) -> Path:
+               mod_date: str, note_id: str,
+               tags: list = None) -> Path:
     """
     Converte HTML → Markdown (extraindo imagens), escreve o .md no vault.
     Imagens são salvas em _attachments/ dentro da mesma pasta da nota.
+    tags: lista de strings com as etiquetas do Apple Notes (macOS 13+).
     """
     d  = vault_dir(segments)
     fp = d / (sanitize(title) + ".md")
@@ -488,6 +552,12 @@ def write_note(title: str, segments: list, body_html: str,
                                    attachments_dir=attachments_dir,
                                    note_title=title)
 
+    # Serializa tags no formato YAML de lista
+    tags_yaml = ""
+    if tags:
+        tag_lines = "\n".join(f'  - "{t}"' for t in tags)
+        tags_yaml = f"tags:\n{tag_lines}\n"
+
     fm = (f'---\n'
           f'title: "{title}"\n'
           f'folder: "{folder_path}"\n'
@@ -495,6 +565,7 @@ def write_note(title: str, segments: list, body_html: str,
           f'note_id: "{note_id}"\n'
           f'synced_at: "{datetime.now(ZoneInfo(TIMEZONE)).isoformat()}"\n'
           f'apple_notes_modified: "{mod_date}"\n'
+          f'{tags_yaml}'
           f'---\n\n')
     fp.write_text(fm + content, encoding="utf-8")
     return fp
@@ -605,13 +676,14 @@ def sync():
                 continue
 
             is_new            = state.get(state_key) is None
-            fetched           = bodies.get(note_id, ("", ""))
+            fetched           = bodies.get(note_id, ("", "", []))
             body_html         = fetched[0]
             # Usa a data do fetch_one — mesma fonte que será consultada
             # no próximo ciclo, eliminando divergências de fuso/formato
             mod_date_to_save  = fetched[1] if fetched[1] else mod_date
+            tags              = fetched[2] if len(fetched) > 2 else []
             fp                = write_note(title, segments, body_html,
-                                           mod_date_to_save, note_id)
+                                           mod_date_to_save, note_id, tags)
 
             if not ARGS.dry_run:
                 state[state_key] = mod_date_to_save  # data consistente
@@ -651,6 +723,14 @@ def sync():
         save_json(DIRTY_FILE, {
             "generated_at": datetime.now().isoformat(),
             "paths": dirty_paths
+        })
+        # Grava métricas estruturadas — lidas pelo pipeline sem parsing de log
+        save_json(METRICS_FILE, {
+            "generated_at": datetime.now().isoformat(),
+            "criadas":     created,
+            "atualizadas": updated,
+            "protegidas":  protected,
+            "erros":       errors,
         })
         # Remove checkpoint só se tudo correu bem
         if errors == 0:

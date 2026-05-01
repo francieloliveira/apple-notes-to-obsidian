@@ -4,7 +4,7 @@ Sincronização automática entre **Apple Notes** e **Obsidian** no macOS, com o
 
 ## ✨ Funcionalidades
 
-- **Sync bidirecional** — Exporta notas do Apple Notes para o Obsidian preservando formatação, imagens e anexos
+- **Sync Apple Notes → Obsidian** — Exporta notas preservando formatação, imagens e anexos (unidirecional)
 - **Organização automática** — Classifica notas por domínio (tech, cloud, AI, devops, etc.) e cria links contextuais
 - **Detecção de lixo** — Move automaticamente notas vazias ou com nomes genéricos para pasta `_lixo`
 - **Menu bar nativa** — Acompanhe o status do sync, execute sincronizações manuais e acesse logs diretamente da menu bar
@@ -57,15 +57,34 @@ pip3 install rumps
 
 ### 5. Configure os Launch Agents (opcional)
 
-Para rodar o pipeline automaticamente a cada 5 minutos e ter a menu bar sempre disponível:
+Para rodar o pipeline automaticamente a cada 5 minutos e ter a menu bar sempre disponível,
+você precisará criar os arquivos `.plist` manualmente (não estão no repo, pois contêm paths locais).
+
+Crie `~/Library/LaunchAgents/com.vaultai.pipeline.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>          <string>com.vaultai.pipeline</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/pipeline.py</string>
+    </array>
+    <key>StartInterval</key>  <integer>300</integer>
+    <key>RunAtLoad</key>      <false/>
+    <key>StandardOutPath</key><string>/Users/SEU_USUARIO/.vault/launchd.log</string>
+    <key>StandardErrorPath</key><string>/Users/SEU_USUARIO/.vault/launchd.log</string>
+</dict>
+</plist>
+```
 
 ```bash
-cp com.vaultai.pipeline.plist ~/Library/LaunchAgents/
-cp com.vaultai.menubar.plist ~/Library/LaunchAgents/
-
 launchctl load ~/Library/LaunchAgents/com.vaultai.pipeline.plist
-launchctl load ~/Library/LaunchAgents/com.vaultai.menubar.plist
 ```
+
+> Substitua `SEU_USUARIO` pelo seu nome de usuário macOS.
 
 ### 6. Inicie a menu bar
 
@@ -161,10 +180,9 @@ apple-notes-to-obsidian/
 ├── notes_to_obsidian.py     # Export Apple Notes → Markdown
 ├── organize_vault.py        # Organização e links
 ├── vault_menubar.py         # App da menu bar
+├── config.py                # Configuração centralizada (não versionado)
 ├── config.example.py        # Template de configuração
-├── com.vaultai.pipeline.plist    # Launch agent (sync automático)
-├── com.vaultai.menubar.plist     # Launch agent (menu bar)
-├── sanitize_for_github.py   # Script de sanitização
+├── sanitize_for_github.py   # Script de sanitização para publicação
 ├── .gitignore
 └── README.md
 ```

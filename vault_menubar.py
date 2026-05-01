@@ -21,13 +21,15 @@ from pathlib import Path
 
 import rumps
 
-# ─── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
-STATUS_FILE  = os.path.expanduser("~/.vault/status.json")
-PIPELINE     = "${SCRIPTS_DIR}/pipeline.py"
-LOG_FILE     = os.path.expanduser("~/.vault/pipeline.log")
-SYNC_LOG     = os.path.expanduser("~/.vault/sync.log")
-POLL_SECS    = 5      # intervalo de leitura do status.json
-# ─────────────────────────────────────────────────────────────────────────────
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from config import (
+    STATUS_FILE, SCRIPTS_DIR, PIPELINE_LOG as LOG_FILE,
+    SYNC_LOG, POLL_SECS,
+)
+
+PIPELINE = os.path.join(SCRIPTS_DIR, "pipeline.py")
 
 # Ícones usados no título da menu bar
 ICON = {
@@ -93,6 +95,7 @@ class VaultMenuBar(rumps.App):
         self._last_state    = "idle"
         self._running       = False
         self._last_updated  = None
+        self._sync_started  = None   # timestamp de início do sync (para elapsed)
 
         # Inicia polling em thread separada
         t = threading.Thread(target=self._poll_loop, daemon=True)
@@ -119,6 +122,12 @@ class VaultMenuBar(rumps.App):
         self._last_updated = updated
         self._last_state   = state
 
+        # Registra início do sync para exibir tempo decorrido no spinner
+        if state == "running" and self._sync_started is None:
+            self._sync_started = time.time()
+        elif state != "running":
+            self._sync_started = None
+
         # Ícone na menu bar
         icon = ICON.get(state, "·")
 
@@ -141,7 +150,8 @@ class VaultMenuBar(rumps.App):
             self.status_item.title = f"⟳  {message or 'Sincronizando…'}"
         elif state == "ok":
             elapsed = metrics.get("elapsed_s", 0)
-            self.status_item.title = f"✓  {message or 'Atualizado'}"
+            elapsed_str = f"  ({elapsed:.0f}s)" if elapsed else ""
+            self.status_item.title = f"✓  {message or 'Atualizado'}{elapsed_str}"
         elif state == "error":
             self.status_item.title = f"✕  {message or 'Erro no pipeline'}"
         else:
@@ -172,8 +182,12 @@ class VaultMenuBar(rumps.App):
         return {}
 
     def _relative_time(self, dt: datetime) -> str:
+        # Normaliza para naive (remove tzinfo) para evitar TypeError ao subtrair
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
         delta = datetime.now() - dt
         s = int(delta.total_seconds())
+        if s < 0:       return "agora mesmo"   # relógio ligeiramente fora de sync
         if s < 60:      return "agora mesmo"
         if s < 3600:    return f"há {s // 60} min"
         if s < 86400:   return f"há {s // 3600}h"
@@ -221,9 +235,7 @@ class VaultMenuBar(rumps.App):
         self._open_in_terminal(SYNC_LOG)
 
     def open_vault_cb(self, _):
-        vault = os.path.expanduser(
-            "~/ValtAI/ValtAI"  # ajuste se necessário
-        )
+        vault = os.path.expanduser("~/VaultAI")
         subprocess.Popen(["open", vault])
 
     def _open_in_terminal(self, path: str):
@@ -237,13 +249,16 @@ class VaultMenuBar(rumps.App):
 
     @rumps.timer(2)
     def animate_running(self, _):
-        """Alterna caracteres de spinner enquanto pipeline roda."""
+        """Alterna spinner e exibe tempo decorrido enquanto pipeline roda."""
         if self._last_state != "running":
             return
         frames = ["⟳", "↻"]
         idx = int(time.time()) % len(frames)
-        current = self.title.split(" ")[0] if " " in self.title else self.title
-        self.title = f"{frames[idx]} …"
+        if self._sync_started is not None:
+            elapsed = int(time.time() - self._sync_started)
+            self.title = f"{frames[idx]} {elapsed}s"
+        else:
+            self.title = f"{frames[idx]} …"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

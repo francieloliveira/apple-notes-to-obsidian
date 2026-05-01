@@ -18,13 +18,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# ─── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
-SCRIPTS_DIR  = os.getenv("SCRIPTS_DIR", "/usr/local/bin")
-LOCK_FILE    = "/tmp/vault_pipeline.lock"
-LOG_FILE     = os.path.expanduser("~/.vault/pipeline.log")
-STATUS_FILE  = os.path.expanduser("~/.vault/status.json")  # lido pelo menu bar
-STEP_TIMEOUT = 700  # segundos por etapa
-# ─────────────────────────────────────────────────────────────────────────────
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from config import (
+    SCRIPTS_DIR, LOCK_FILE, PIPELINE_LOG as LOG_FILE,
+    STATUS_FILE, METRICS_FILE, STEP_TIMEOUT,
+)
 
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -139,7 +139,7 @@ def main():
     try:
         sync_ok = run_step(
             "sync",
-            f"{SCRIPTS_DIR}/notes_to_obsidian.py",
+            os.path.join(SCRIPTS_DIR, "notes_to_obsidian.py"),
             extra
         )
 
@@ -157,7 +157,7 @@ def main():
 
         org_ok = run_step(
             "organize",
-            f"{SCRIPTS_DIR}/organize_vault.py",
+            os.path.join(SCRIPTS_DIR, "organize_vault.py"),
             extra
         )
 
@@ -210,23 +210,11 @@ def main():
 
 
 def _read_sync_metrics() -> dict:
-    """Lê a última linha de métricas do sync log."""
+    """Lê metrics.json gravado pelo sync. Robusto: sem parsing de log."""
     try:
-        log_path = Path(os.path.expanduser("~/.vault/sync.log"))
-        if not log_path.exists():
-            return {}
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-        for line in reversed(lines):
-            if "criadas:" in line and "atualizadas:" in line:
-                m = {}
-                for part in line.split("  "):
-                    if ":" in part:
-                        k, v = part.strip().split(":", 1)
-                        try:
-                            m[k.strip()] = int(v.strip())
-                        except ValueError:
-                            pass
-                return m
+        p = Path(METRICS_FILE)
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         pass
     return {}

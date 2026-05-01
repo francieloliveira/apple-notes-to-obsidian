@@ -44,11 +44,12 @@ ENV/
 logs/
 
 # State files (contêm dados locais do usuário)
-~/.vault/
+# Nota: ~/.vault/ fica fora do repo por definição — listado aqui só como documentação
 *.state.json
 *.checkpoint.json
 *.dirty.json
 notes_ids.json
+metrics.json
 
 # Arquivos de configuração com dados pessoais
 config.py
