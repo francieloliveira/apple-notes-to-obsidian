@@ -262,6 +262,73 @@ DOMAIN_KEYWORDS = {
 
 ---
 
+## 🤖 Integração com Claude (MCP)
+
+Conecte o Claude diretamente ao seu vault Obsidian para buscar notas, explorar links e obter contexto sobre seu conhecimento acumulado — tudo sem sair do chat.
+
+### Como funciona
+
+O VaultAI expõe o vault via **Obsidian Local REST API** (plugin da comunidade), que o Claude acessa via **MCP (Model Context Protocol)**. Com isso, o Claude pode listar arquivos, ler notas com frontmatter, backlinks e tags, e executar buscas semânticas dentro do vault.
+
+### 1. Instale o plugin Obsidian Local REST API
+
+1. Abra o Obsidian → **Settings → Community Plugins → Browse**
+2. Busque por **"Local REST API"** (autor: Adam Coddington)
+3. Instale e ative o plugin
+4. Em **Settings → Local REST API**:
+   - Habilite **"Enable Non-encrypted (HTTP) Server"**
+   - Anote a porta (padrão: `27123`)
+   - Anote o **API Key** gerado automaticamente
+
+### 2. Instale o servidor MCP
+
+```bash
+npm install -g @swarogan/obsidian-mcp-rest
+```
+
+### 3. Configure o Claude Desktop
+
+Edite `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-rest": {
+      "command": "/opt/homebrew/bin/node",
+      "args": [
+        "/opt/homebrew/lib/node_modules/@swarogan/obsidian-mcp-rest/dist/index.js"
+      ],
+      "env": {
+        "OBSIDIAN_REST_URL": "http://localhost:27123",
+        "OBSIDIAN_API_KEY": "SUA_API_KEY_AQUI",
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}
+```
+
+> Substitua `SUA_API_KEY_AQUI` pelo token exibido no painel do plugin.
+
+### 4. Reinicie o Claude Desktop
+
+Após salvar o arquivo de configuração, reinicie o Claude para que o MCP seja carregado.
+
+### O que o Claude passa a conseguir fazer
+
+Com o vault conectado, você pode perguntar ao Claude coisas como:
+
+- _"O que eu tenho de notas sobre Kubernetes?"_
+- _"Mostre minha nota sobre o projeto X"_
+- _"Quais notas estão linkadas com a nota Y?"_
+- _"Liste tudo que está na pasta `cloud`"_
+
+### Segurança
+
+O servidor HTTP do plugin escuta **somente em `localhost`** — nenhum acesso externo é possível. A API Key autentica cada requisição. Nenhum dado sai do seu Mac.
+
+---
+
 ## 🔒 Segurança e Privacidade
 
 - **Nenhuma dados sai do seu Mac** — Todo processamento é local
@@ -318,6 +385,15 @@ Contribuições são bem-vindas! Abra uma issue ou PR para:
 ---
 
 ## 📝 Changelog
+
+### v1.1.0 (2025)
+- Integração MCP com Claude Desktop via Obsidian Local REST API
+- Organização aprimorada: tags do frontmatter enriquecem domínios
+- Links por pasta de origem (Apple Notes folder affinity)
+- Critério de link relaxado: 1 domínio compartilhado (antes: 2)
+- Geração de MOCs (Maps of Content) em `_index/` por domínio
+- Estatísticas detalhadas no organize_vault.py
+- Correção de bug: re-sync desnecessário de todas as notas por comparação de datas inconsistente
 
 ### v1.0.0 (2024)
 - Sync Apple Notes → Obsidian
