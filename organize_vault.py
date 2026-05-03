@@ -189,6 +189,10 @@ def main():
     for fp in targets:
         if not fp.exists() or LIXO_DIR in str(fp):
             continue
+        try:
+            fp.relative_to(vault_root)
+        except ValueError:
+            continue  # arquivo fora do vault_root (ex: caminho antigo) — ignora
         if is_lixo_by_name(fp.name):
             move_to_lixo(fp, vault_root, "nome")
             lixo_count += 1

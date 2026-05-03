@@ -27,6 +27,7 @@ from config import (
     VAULT_PATH, SYNC_ROOT, STATE_FILE, IDS_FILE, DIRTY_FILE,
     CHECKPOINT_FILE, METRICS_FILE, SYNC_LOG as LOG_FILE,
     TIMEZONE, FLAT_FOLDERS, FETCH_WORKERS, CHECKPOINT_EVERY,
+    PROGRESS_FILE,
 )
 
 # ─── CONSTANTES INTERNAS ──────────────────────────────────────────────────────
@@ -164,6 +165,28 @@ def clear_progress():
         print(f"\r{' ' * 80}\r", end="", flush=True)
         _progress_active = False
 
+def save_progress(current: int, total: int, criadas: int, atualizadas: int, erros: int):
+    """Grava progresso em tempo real para o menu bar ler."""
+    tmp = PROGRESS_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({
+                "current":     current,
+                "total":       total,
+                "criadas":     criadas,
+                "atualizadas": atualizadas,
+                "erros":       erros,
+            }, f)
+        os.replace(tmp, PROGRESS_FILE)
+    except Exception:
+        pass
+
+def clear_progress_file():
+    try:
+        Path(PROGRESS_FILE).unlink(missing_ok=True)
+    except Exception:
+        pass
+
 def run_as(script: str, timeout=120) -> str:
     r = subprocess.run(["osascript", "-e", script],
                        capture_output=True, text=True, timeout=timeout)
@@ -180,7 +203,7 @@ tell application "System Events"
 end tell
 """
 
-AS_NOTES_OPEN  = 'tell application "Notes" to activate'
+AS_NOTES_OPEN  = 'tell application "Notes" to launch'
 AS_NOTES_QUIT  = 'tell application "Notes" to quit'
 
 _notes_was_running = False   # estado antes do sync — para fechar depois se necessário
@@ -501,6 +524,8 @@ def fetch_needed(pending: list, folder_tree: dict) -> dict:
 
             done += 1
             progress(done, total, f"{title[:30]}  [{label}]")
+            if done % 10 == 0 or done == total:
+                save_progress(done, total, 0, 0, failed)
 
     clear_progress()
     if failed:
@@ -570,6 +595,31 @@ def write_note(title: str, segments: list, body_html: str,
     fp.write_text(fm + content, encoding="utf-8")
     return fp
 
+# ── Verificação rápida do banco do Notes ─────────────────────────────────────
+
+def notes_db_changed() -> bool:
+    """
+    Compara o mtime de NoteStore.sqlite com o timestamp do último sync
+    gravado em state.json (_last_sync_epoch).
+
+    Retorna True  → banco modificado, precisa abrir o Notes e sincronizar.
+    Retorna False → nada mudou, pode encerrar sem abrir o Notes.app.
+    """
+    db_path = Path(os.path.expanduser(
+        "~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
+    ))
+    try:
+        db_mtime  = db_path.stat().st_mtime
+        saved     = load_json(STATE_FILE)
+        last_sync = saved.get("_last_sync_epoch", 0)
+        if db_mtime <= last_sync:
+            log("     NoteStore.sqlite inalterado desde o último sync — pulando")
+            return False
+        return True
+    except Exception:
+        return True   # em caso de dúvida, executa o sync normalmente
+
+
 # ── Sync principal ────────────────────────────────────────────────────────────
 
 def sync():
@@ -577,176 +627,190 @@ def sync():
     label = " [DRY RUN]" if ARGS.dry_run else ""
     log(f"=== sync iniciado{label} ===")
 
+    # Verificação rápida: banco do Notes mudou desde o último sync?
+    # Feita ANTES de abrir o Notes — se não mudou, encerramos imediatamente.
+    if not ARGS.full and not notes_db_changed():
+        log("=== sync concluido (sem mudanças) ===")
+        return True
+
     # Garante que o Notes está rodando antes de qualquer AppleScript
     ensure_notes_running()
 
-    log("1/4  Mapeando árvore de pastas...")
-    tree = build_folder_tree()
-    log(f"     Pastas: {len(tree)}")
+    try:
+        log("1/4  Mapeando árvore de pastas...")
+        tree = build_folder_tree()
+        log(f"     Pastas: {len(tree)}")
 
-    state = {} if ARGS.full else load_json(STATE_FILE)
-    ids   = {} if ARGS.full else load_json(IDS_FILE)
+        state = {} if ARGS.full else load_json(STATE_FILE)
+        ids   = {} if ARGS.full else load_json(IDS_FILE)
 
-    log("2/4  Listando metadados...")
-    all_meta = list_meta()
-    log(f"     Notas encontradas: {len(all_meta)}")
+        log("2/4  Listando metadados...")
+        all_meta = list_meta()
+        log(f"     Notas encontradas: {len(all_meta)}")
 
-    # Filtra só as que precisam de sync
-    # Chave: note_id (estável, único, imune a renomeação de pasta/título)
-    pending = []
-    for (nid, title, fid, mdate) in all_meta:
-        state_key = nid   # usa o note_id diretamente como chave
-        if state.get(state_key) != mdate or ARGS.full:
-            pending.append((nid, title, fid, mdate))
+        # Filtra só as que precisam de sync
+        # Chave: note_id (estável, único, imune a renomeação de pasta/título)
+        pending = []
+        for (nid, title, fid, mdate) in all_meta:
+            state_key = nid   # usa o note_id diretamente como chave
+            if state.get(state_key) != mdate or ARGS.full:
+                pending.append((nid, title, fid, mdate))
 
-    log(f"3/4  Notas a processar: {len(pending)} "
-        f"(ignoradas: {len(all_meta) - len(pending)})")
+        log(f"3/4  Notas a processar: {len(pending)} "
+            f"(ignoradas: {len(all_meta) - len(pending)})")
 
-    if not pending:
-        log("     Tudo atualizado. Nada a fazer.")
-        save_json(DIRTY_FILE, {"generated_at": datetime.now().isoformat(), "paths": []})
-        clear_checkpoint()
-        log("=== sync concluido ===")
-        return True
-
-    # ── Verifica checkpoint de sessão anterior ─────────────────────────────
-    ckpt = {} if ARGS.full else load_checkpoint()
-    pending_ids_now = [n[0] for n in pending]
-
-    if ckpt and set(ckpt.get("pending_ids", [])) == set(pending_ids_now):
-        already_done = set(ckpt["pending_ids"]) - set(
-            n[0] for n in pending if ckpt["state"].get(f"{n[2]}/{n[1]}") != n[3]
-        )
-        remaining = [n for n in pending if n[0] not in set(ckpt.get("state", {}).values())]
-
-        # Retoma estado do checkpoint
-        state       = ckpt["state"]
-        ids         = ckpt["ids"]
-        dirty_paths = ckpt["dirty_paths"]
-        created     = ckpt["created"]
-        updated     = ckpt["updated"]
-
-        # Filtra pending para só o que ainda não foi gravado
-        done_keys = set(state.keys())
-        pending   = [n for n in pending
-                     if f"{n[2]}/{n[1]}" not in done_keys]
-
-        resumed = len(pending_ids_now) - len(pending)
-        if resumed:
-            log(f"     Retomando checkpoint: {resumed} notas já gravadas, "
-                f"{len(pending)} restantes")
-    else:
-        if ckpt:
-            log("     Checkpoint inválido (notas mudaram) — iniciando do zero")
+        if not pending:
+            log("     Tudo atualizado. Nada a fazer.")
+            save_json(DIRTY_FILE, {"generated_at": datetime.now().isoformat(), "paths": []})
             clear_checkpoint()
-        dirty_paths = []
-        created = updated = 0
+            log("=== sync concluido ===")
+            return True
 
-    if not pending:
-        log("     Todas as notas já gravadas (via checkpoint).")
-        save_json(DIRTY_FILE, {
-            "generated_at": datetime.now().isoformat(),
-            "paths": dirty_paths
-        })
-        clear_checkpoint()
-        log("=== sync concluido ===")
-        return True
+        # ── Verifica checkpoint de sessão anterior ─────────────────────────────
+        ckpt = {} if ARGS.full else load_checkpoint()
+        pending_ids_now = [n[0] for n in pending]
 
-    # Etapa 3: busca corpos em lotes com retry
-    if ARGS.dry_run:
-        bodies = {}
-    else:
-        bodies = fetch_needed(pending, tree)
-        clear_progress()
-        log(f"     Conteúdo obtido: {len(bodies)}/{len(pending)} notas")
+        if ckpt and set(ckpt.get("pending_ids", [])) == set(pending_ids_now):
+            already_done = set(ckpt["pending_ids"]) - set(
+                n[0] for n in pending if ckpt["state"].get(f"{n[2]}/{n[1]}") != n[3]
+            )
+            remaining = [n for n in pending if n[0] not in set(ckpt.get("state", {}).values())]
 
-    log(f"4/4  Gravando no vault...")
-    protected = errors = 0
-    total_w   = len(pending)
+            # Retoma estado do checkpoint
+            state       = ckpt["state"]
+            ids         = ckpt["ids"]
+            dirty_paths = ckpt["dirty_paths"]
+            created     = ckpt["created"]
+            updated     = ckpt["updated"]
 
-    for i, (note_id, title, folder_id, mod_date) in enumerate(pending, 1):
-        state_key = note_id   # chave estável = note_id
-        try:
-            segments = tree.get(folder_id)
-            if not segments:
-                clear_progress()
-                log(f"  !! folder não encontrado: {folder_id} / '{title}'")
-                errors += 1
-                progress(i, total_w, f"erro  {title[:35]}")
-                continue
+            # Filtra pending para só o que ainda não foi gravado
+            done_keys = set(state.keys())
+            pending   = [n for n in pending
+                         if f"{n[2]}/{n[1]}" not in done_keys]
 
-            is_new            = state.get(state_key) is None
-            fetched           = bodies.get(note_id, ("", "", []))
-            body_html         = fetched[0]
-            # Usa a data do fetch_one — mesma fonte que será consultada
-            # no próximo ciclo, eliminando divergências de fuso/formato
-            mod_date_to_save  = fetched[1] if fetched[1] else mod_date
-            tags              = fetched[2] if len(fetched) > 2 else []
-            fp                = write_note(title, segments, body_html,
-                                           mod_date_to_save, note_id, tags)
-
-            if not ARGS.dry_run:
-                state[state_key] = mod_date_to_save  # data consistente
-                ids[state_key]   = note_id
-                dirty_paths.append(str(fp))
-
-            if is_new:
-                created += 1
-            else:
-                updated += 1
-
-            # ── Checkpoint periódico ───────────────────────────────────────
-            if not ARGS.dry_run and i % CHECKPOINT_EVERY == 0:
-                remaining_ids = [n[0] for n in pending[i:]]
-                save_checkpoint(remaining_ids, state, ids,
-                                dirty_paths, created, updated)
-                log(f"  .. checkpoint: {i}/{total_w} notas gravadas",
-                    verbose_only=True)
-
-            action = "criada" if is_new else "atualiz"
-            progress(i, total_w, f"{action}  {title[:35]}")
-
-        except FileExistsError as e:
-            clear_progress()
-            protected += 1
-            log(f"  --  PROTEGIDA '{title}'")
-        except Exception as e:
-            clear_progress()
-            errors += 1
-            log(f"  !!  ERRO '{title}': {e}")
-
-    clear_progress()
-
-    if not ARGS.dry_run:
-        save_json(STATE_FILE, state)
-        save_json(IDS_FILE, ids)
-        save_json(DIRTY_FILE, {
-            "generated_at": datetime.now().isoformat(),
-            "paths": dirty_paths
-        })
-        # Grava métricas estruturadas — lidas pelo pipeline sem parsing de log
-        save_json(METRICS_FILE, {
-            "generated_at": datetime.now().isoformat(),
-            "criadas":     created,
-            "atualizadas": updated,
-            "protegidas":  protected,
-            "erros":       errors,
-        })
-        # Remove checkpoint só se tudo correu bem
-        if errors == 0:
-            clear_checkpoint()
+            resumed = len(pending_ids_now) - len(pending)
+            if resumed:
+                log(f"     Retomando checkpoint: {resumed} notas já gravadas, "
+                    f"{len(pending)} restantes")
         else:
-            log(f"  .. checkpoint mantido ({errors} erros) — próximo sync retoma")
+            if ckpt:
+                log("     Checkpoint inválido (notas mudaram) — iniciando do zero")
+                clear_checkpoint()
+            dirty_paths = []
+            created = updated = 0
 
-    log(f"     criadas:{created}  atualizadas:{updated}  "
-        f"protegidas:{protected}  erros:{errors}")
-    log("=== sync concluido ===")
-    log("=" * 50)
+        if not pending:
+            log("     Todas as notas já gravadas (via checkpoint).")
+            save_json(DIRTY_FILE, {
+                "generated_at": datetime.now().isoformat(),
+                "paths": dirty_paths
+            })
+            clear_checkpoint()
+            log("=== sync concluido ===")
+            return True
 
-    # Fecha o Notes se foi o script que abriu
-    quit_notes_if_we_opened()
+        # Etapa 3: busca corpos em lotes com retry
+        if ARGS.dry_run:
+            bodies = {}
+        else:
+            bodies = fetch_needed(pending, tree)
+            clear_progress()
+            log(f"     Conteúdo obtido: {len(bodies)}/{len(pending)} notas")
 
-    return errors == 0
+        log(f"4/4  Gravando no vault...")
+        protected = errors = 0
+        total_w   = len(pending)
+
+        for i, (note_id, title, folder_id, mod_date) in enumerate(pending, 1):
+            state_key = note_id   # chave estável = note_id
+            try:
+                segments = tree.get(folder_id)
+                if not segments:
+                    clear_progress()
+                    log(f"  !! folder não encontrado: {folder_id} / '{title}'")
+                    errors += 1
+                    progress(i, total_w, f"erro  {title[:35]}")
+                    continue
+
+                is_new            = state.get(state_key) is None
+                fetched           = bodies.get(note_id, ("", "", []))
+                body_html         = fetched[0]
+                # Usa a data do fetch_one — mesma fonte que será consultada
+                # no próximo ciclo, eliminando divergências de fuso/formato
+                mod_date_to_save  = fetched[1] if fetched[1] else mod_date
+                tags              = fetched[2] if len(fetched) > 2 else []
+                fp                = write_note(title, segments, body_html,
+                                               mod_date_to_save, note_id, tags)
+
+                if not ARGS.dry_run:
+                    state[state_key] = mod_date_to_save  # data consistente
+                    ids[state_key]   = note_id
+                    dirty_paths.append(str(fp))
+
+                if is_new:
+                    created += 1
+                else:
+                    updated += 1
+
+                save_progress(i, total_w, created, updated, errors)
+
+                # ── Checkpoint periódico ───────────────────────────────────────
+                if not ARGS.dry_run and i % CHECKPOINT_EVERY == 0:
+                    remaining_ids = [n[0] for n in pending[i:]]
+                    save_checkpoint(remaining_ids, state, ids,
+                                    dirty_paths, created, updated)
+                    log(f"  .. checkpoint: {i}/{total_w} notas gravadas",
+                        verbose_only=True)
+
+                action = "criada" if is_new else "atualiz"
+                progress(i, total_w, f"{action}  {title[:35]}")
+
+            except FileExistsError as e:
+                clear_progress()
+                protected += 1
+                log(f"  --  PROTEGIDA '{title}'")
+            except Exception as e:
+                clear_progress()
+                errors += 1
+                log(f"  !!  ERRO '{title}': {e}")
+
+        clear_progress()
+
+        if not ARGS.dry_run:
+            # Salva timestamp do sync bem-sucedido — usado por notes_db_changed()
+            # na próxima execução para evitar abrir o Notes desnecessariamente.
+            state["_last_sync_epoch"] = time.time()
+            save_json(STATE_FILE, state)
+            save_json(IDS_FILE, ids)
+            save_json(DIRTY_FILE, {
+                "generated_at": datetime.now().isoformat(),
+                "paths": dirty_paths
+            })
+            # Grava métricas estruturadas — lidas pelo pipeline sem parsing de log
+            save_json(METRICS_FILE, {
+                "generated_at": datetime.now().isoformat(),
+                "criadas":     created,
+                "atualizadas": updated,
+                "protegidas":  protected,
+                "erros":       errors,
+            })
+            # Remove checkpoint só se tudo correu bem
+            if errors == 0:
+                clear_checkpoint()
+            else:
+                log(f"  .. checkpoint mantido ({errors} erros) — próximo sync retoma")
+
+        log(f"     criadas:{created}  atualizadas:{updated}  "
+            f"protegidas:{protected}  erros:{errors}")
+        log("=== sync concluido ===")
+        log("=" * 50)
+        return errors == 0
+
+    finally:
+        # Sempre executado — sucesso, early return dentro do try ou exceção.
+        # Garante que o Notes.app seja fechado se foi o script que o abriu.
+        quit_notes_if_we_opened()
+        clear_progress_file()
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
