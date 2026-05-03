@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-notes_to_obsidian.py  —  Fase 0 rev3
+notes_to_obsidian.py  —  Fase 0 rev4
 Export em lotes por pasta: cada pasta é um AppleScript separado,
 permitindo acompanhar o progresso em tempo real no terminal.
 """
@@ -257,6 +257,14 @@ def sanitize(name: str) -> str:
     safe = re.sub(r'[\\/*?:"<>|]', "-", name)
     safe = safe.strip(". ")
     return safe[:100] or "sem-nome"
+
+def normalize_date(d: str) -> str:
+    """
+    Normaliza string de data do AppleScript para comparação estável.
+    Remove espaços extras, quebras de linha e converte para minúsculas
+    para evitar que diferenças de formatação causem re-sync desnecessário.
+    """
+    return " ".join(d.strip().lower().split())
 
 
 # ── Checkpoint ────────────────────────────────────────────────────────────────
@@ -650,10 +658,11 @@ def sync():
 
         # Filtra só as que precisam de sync
         # Chave: note_id (estável, único, imune a renomeação de pasta/título)
+        # normalize_date evita re-sync por diferença de espaço/case na data
         pending = []
         for (nid, title, fid, mdate) in all_meta:
             state_key = nid   # usa o note_id diretamente como chave
-            if state.get(state_key) != mdate or ARGS.full:
+            if state.get(state_key) != normalize_date(mdate) or ARGS.full:
                 pending.append((nid, title, fid, mdate))
 
         log(f"3/4  Notas a processar: {len(pending)} "
@@ -743,7 +752,7 @@ def sync():
                                                mod_date_to_save, note_id, tags)
 
                 if not ARGS.dry_run:
-                    state[state_key] = mod_date_to_save  # data consistente
+                    state[state_key] = normalize_date(mod_date_to_save)  # normalizado para comparação estável
                     ids[state_key]   = note_id
                     dirty_paths.append(str(fp))
 
