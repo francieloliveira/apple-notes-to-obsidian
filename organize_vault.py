@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-organize_vault.py  —  rev2
-Melhorias implementadas:
-  A) Tags do Apple Notes (frontmatter) → usadas para links e domínios
-  B) Notas da mesma pasta original → links com critério automático
-  C) MOC (Map of Content) por domínio em _index/
-  D) Breakdown detalhado: sem_sinal / sem_links / já_linkada
-  E) Cross-folder: >= 1 domínio em comum (era >= 2)
+organize_vault.py  —  rev3 (Modelo A)
+Linking conservador alinhado a práticas PKM/Obsidian:
+  1. Título citado no texto (word boundary, >= MIN_TITLE_CHARS)
+  2. Tags em comum (Apple Notes)
+  - Máx MAX_INLINE_LINKS links inline por nota
+  - Sem backlinks automáticos (Obsidian já expõe backlinks nativos)
+  - Domínios só em MOCs (_index/), não como critério de link inline
+  - Notas lixo excluídas do grafo de links
 """
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -23,9 +23,12 @@ import os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from config import (
     VAULT_PATH, DIRTY_FILE, ORGANIZE_LOG as LOG_FILE,
+    ORGANIZE_METRICS_FILE,
     LIXO_DIR, MIN_CONTENT_CHARS,
     LIXO_NAME_PATTERNS, DOMAIN_KEYWORDS,
+    MAX_INLINE_LINKS, MIN_TITLE_CHARS,
 )
+from utils import load_json, save_json, extract_note_id
 
 MOC_DIR = "_index"   # pasta dos índices dentro do vault
 
@@ -99,7 +102,6 @@ def parse_frontmatter(raw: str) -> dict:
             key, _, val = line.partition(":")
             key = key.strip()
             val = val.strip().strip('"')
-            # Verifica se as próximas linhas são itens de lista YAML
             items = []
             j = i + 1
             while j < len(lines):
@@ -108,7 +110,7 @@ def parse_frontmatter(raw: str) -> dict:
                     items.append(item_m.group(1).strip().strip('"'))
                     j += 1
                 elif lines[j].startswith("  ") or lines[j].startswith("\t"):
-                    j += 1   # linha de continuação sem item reconhecido
+                    j += 1
                 else:
                     break
             if items:
@@ -154,7 +156,7 @@ def move_to_lixo(fp: Path, vault_root: Path, reason: str):
     if not ARGS.dry_run:
         fp.rename(dest)
 
-# ── Domínios ──────────────────────────────────────────────────────────────────
+# ── Domínios (somente MOC) ────────────────────────────────────────────────────
 
 def get_domains(text: str) -> set:
     tl = text.lower()
@@ -170,14 +172,8 @@ SKIP_DIRS = {LIXO_DIR, MOC_DIR, "_attachments"}
 
 def collect_all_notes(vault_root: Path, dirty_paths: list = None) -> dict:
     """
-    Retorna {
-        stem_lower: {
-            path, stem, domains, tags, apple_folder,
-            fs_folder, text, dirty
-        }
-    }
-    A) Tags do Apple Notes (frontmatter) enriquecem os domínios.
-    B) apple_folder preserva a pasta original para critério de afinidade.
+    Retorna { note_id: { path, stem, domains, tags, ... } }.
+    Notas lixo ficam fora do grafo de links.
     """
     dirty_set = set(dirty_paths or [])
     notes     = {}
@@ -187,94 +183,101 @@ def collect_all_notes(vault_root: Path, dirty_paths: list = None) -> dict:
         if any(p in SKIP_DIRS for p in parts):
             continue
 
+        if is_lixo_by_name(md.name):
+            continue
+
         try:
             raw = md.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
 
-        fm      = parse_frontmatter(raw)
-        content = _FM_STRIP_RE.sub("", raw, count=1).strip()
-        stem    = md.stem
+        fm       = parse_frontmatter(raw)
+        content  = _FM_STRIP_RE.sub("", raw, count=1).strip()
+        stem     = md.stem
+        note_id  = (
+            fm.get("note_id", "").strip().strip('"')
+            if isinstance(fm.get("note_id"), str)
+            else extract_note_id(raw)
+        )
+        if not note_id:
+            note_id = f"legacy:{md}"
 
-        # Domínios por conteúdo
+        display_title = (
+            fm.get("title", "").strip().strip('"')
+            if isinstance(fm.get("title"), str) and fm.get("title")
+            else stem
+        )
+
         domains = get_domains(content)
 
-        # A) Tags do frontmatter (Apple Notes tags)
         raw_tags = fm.get("tags", [])
         if isinstance(raw_tags, list):
             tags = {t.lower().strip() for t in raw_tags if t}
         else:
             tags = set()
 
-        # A) Tags que coincidem com domínios conhecidos enriquecem os domínios
         tag_domains = tags & DOMAIN_KEYWORDS.keys()
         domains    |= tag_domains
 
-        # B) Pasta original do Apple Notes (do frontmatter) e pasta no filesystem
-        apple_folder = fm.get("folder", "").strip().strip('"')
-        fs_folder    = str(md.parent.relative_to(vault_root))
-
-        notes[stem.lower()] = {
-            "path":         md,
-            "stem":         stem,
-            "domains":      domains,
-            "tags":         tags,
-            "apple_folder": apple_folder,
-            "fs_folder":    fs_folder,
-            "text":         content.lower(),
-            "dirty":        str(md) in dirty_set,
+        notes[note_id] = {
+            "path":          md,
+            "stem":          stem,
+            "title":         display_title,
+            "link":          stem,
+            "note_id":       note_id,
+            "domains":       domains,
+            "tags":          tags,
+            "text":          content.lower(),
+            "dirty":         str(md) in dirty_set,
         }
 
     return notes
 
-# ── Critérios de link ─────────────────────────────────────────────────────────
+# ── Critérios de link (Modelo A) ──────────────────────────────────────────────
+
+def title_mentioned(text: str, title: str) -> bool:
+    """Título citado com word boundary — evita matches parciais."""
+    if len(title) < MIN_TITLE_CHARS:
+        return False
+    pattern = r'\b' + re.escape(title.lower()) + r'\b'
+    return bool(re.search(pattern, text))
 
 def find_links(note: dict, all_notes: dict) -> list:
     """
-    Critérios de link (em ordem de prioridade):
-      1. Título mencionado no texto (>= 5 chars)
-      A) Tags em comum (Apple Notes tags)
-      B) Mesma pasta original do Apple Notes (apple_folder)
-      E) >= 1 domínio em comum cross-folder (era >= 2)
+    Critérios inline (conservadores):
+      1. Título citado no texto (word boundary)
+      2. Tags em comum (Apple Notes)
+    Prioridade: título > tags. Teto: MAX_INLINE_LINKS.
     """
-    links        = []
-    text         = note["text"]
-    domains      = note["domains"]
-    tags         = note["tags"]
-    apple_folder = note["apple_folder"]
-    own          = note["stem"].lower()
+    candidates: list[tuple[int, str]] = []
+    text    = note["text"]
+    tags    = note["tags"]
+    own_id  = note["note_id"]
 
-    for sl, other in all_notes.items():
-        if sl == own:
+    for other_id, other in all_notes.items():
+        if other_id == own_id:
             continue
 
-        stem    = other["stem"]
+        o_title = other["title"]
+        o_link  = other["link"]
         o_tags  = other["tags"]
-        o_af    = other["apple_folder"]
-        o_dom   = other["domains"]
 
-        # Critério 1: título da outra nota mencionado no texto desta
-        if len(stem) >= 5 and stem.lower() in text:
-            links.append(stem)
+        if title_mentioned(text, o_title):
+            candidates.append((1, o_link))
+        elif tags and o_tags and (tags & o_tags):
+            candidates.append((2, o_link))
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for _prio, link in sorted(candidates, key=lambda x: x[0]):
+        if link in seen:
             continue
+        seen.add(link)
+        result.append(link)
+        if len(result) >= MAX_INLINE_LINKS:
+            break
 
-        # A) Critério 2: tags em comum do Apple Notes
-        if tags and o_tags and (tags & o_tags):
-            links.append(stem)
-            continue
-
-        # B) Critério 3: mesma pasta original do Apple Notes
-        if (apple_folder and o_af
-                and apple_folder == o_af
-                and apple_folder not in ("", ".")):
-            links.append(stem)
-            continue
-
-        # E) Critério 4: >= 1 domínio em comum (relaxado de >= 2 para cross-folder)
-        if domains and o_dom and (domains & o_dom):
-            links.append(stem)
-
-    return links[:25]   # teto de 25 links por nota
+    return result
 
 # ── Seção de links ────────────────────────────────────────────────────────────
 
@@ -289,26 +292,46 @@ def add_links_section(content: str, links: list) -> str:
         section += f"- [[{l}]]\n"
     return content + section
 
-# ── C) MOC por domínio ────────────────────────────────────────────────────────
+def strip_links_sections(vault_root: Path) -> int:
+    """Remove seções ## Links relacionados de todo o vault (reset de linking)."""
+    cleaned = 0
+    for md in vault_root.rglob("*.md"):
+        parts = md.relative_to(vault_root).parts
+        if any(p in SKIP_DIRS for p in parts):
+            continue
+        try:
+            original = md.read_text(encoding="utf-8", errors="ignore")
+            updated  = _LINKS_SECTION_RE.sub("", original).rstrip() + "\n"
+            if updated != original:
+                if not ARGS.dry_run:
+                    md.write_text(updated, encoding="utf-8")
+                cleaned += 1
+        except Exception:
+            pass
+    return cleaned
 
-def generate_moc(vault_root: Path, all_notes: dict) -> int:
+# ── MOC por domínio ───────────────────────────────────────────────────────────
+
+def generate_moc(vault_root: Path, all_notes: dict,
+                 only_domains: set[str] | None = None) -> int:
     """
-    Gera/atualiza _index/<domínio>.md para cada domínio com a lista
-    de notas que pertencem a ele. Só reescreve se o conteúdo mudou.
+    Gera/atualiza _index/<domínio>.md para cada domínio.
+    Domínios não geram links inline — só índices temáticos.
     """
     moc_dir = vault_root / MOC_DIR
     if not ARGS.dry_run:
         moc_dir.mkdir(exist_ok=True)
 
-    # Agrupa notas por domínio
     domain_map: dict[str, list[str]] = defaultdict(list)
     for n in all_notes.values():
         for d in n["domains"]:
-            domain_map[d].append(n["stem"])
+            domain_map[d].append(n["link"])
 
     generated = 0
     for domain, stems in sorted(domain_map.items()):
-        stems_sorted = sorted(stems, key=str.lower)
+        if only_domains is not None and domain not in only_domains:
+            continue
+        stems_sorted = sorted(set(stems), key=str.lower)
         moc_path     = moc_dir / f"{domain}.md"
 
         lines = [
@@ -336,12 +359,6 @@ def generate_moc(vault_root: Path, all_notes: dict) -> int:
 
     return generated
 
-# ── Utilidades ────────────────────────────────────────────────────────────────
-
-def load_json(path: str) -> dict:
-    p = Path(path)
-    return json.loads(p.read_text()) if p.exists() else {}
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> bool:
@@ -351,7 +368,6 @@ def main() -> bool:
 
     vault_root = Path(VAULT_PATH)
 
-    # Decide quais notas processar
     dirty_paths: list = []
     if not ARGS.full:
         dirty_data  = load_json(DIRTY_FILE)
@@ -363,6 +379,12 @@ def main() -> bool:
         log(f"Processando delta: {len(dirty_paths)} nota(s)")
     else:
         log("Modo --full: processando vault inteiro")
+
+    # ── [ 0 ] Limpar seções de links antigas ──────────────────────────────────
+    if ARGS.full:
+        log("[ 0 ] Removendo seções ## Links relacionados antigas...")
+        n_cleaned = strip_links_sections(vault_root)
+        log(f"  → {n_cleaned} arquivo(s) limpo(s)")
 
     # ── [ 1 ] Lixo ────────────────────────────────────────────────────────────
     log("[ 1 ] Verificando lixo...")
@@ -397,13 +419,14 @@ def main() -> bool:
     n_com_dominio = sum(1 for n in all_notes.values() if n["domains"])
     n_com_tags    = sum(1 for n in all_notes.values() if n["tags"])
     log(
-        f"  → {len(all_notes)} notas | "
-        f"{n_com_dominio} com domínio | "
-        f"{n_com_tags} com tags Apple Notes"
+        f"  → {len(all_notes)} notas no grafo | "
+        f"{n_com_dominio} com domínio (MOC) | "
+        f"{n_com_tags} com tags Apple Notes | "
+        f"máx {MAX_INLINE_LINKS} links/nota"
     )
 
     # ── [ 3 ] Links contextuais ───────────────────────────────────────────────
-    log("[ 3 ] Criando links contextuais...")
+    log("[ 3 ] Criando links contextuais (Modelo A)...")
 
     process_list = (
         [n for n in all_notes.values() if n["dirty"]]
@@ -411,27 +434,17 @@ def main() -> bool:
         else list(all_notes.values())
     )
 
-    backlinks: dict[str, list[str]] = defaultdict(list)
-
-    # D) Contadores detalhados
     linked        = 0
-    n_sem_sinal   = 0   # sem domínio E sem tags E sem pasta
-    n_sem_links   = 0   # tem sinal mas find_links retornou []
-    n_ja_linkada  = 0   # links já existentes, sem mudança
+    n_sem_sinal   = 0
+    n_sem_links   = 0
+    n_ja_linkada  = 0
+    n_limpas      = 0
 
     total = len(process_list)
     for idx, note in enumerate(process_list, 1):
         progress(idx, total, note["stem"])
 
         links = find_links(note, all_notes)
-
-        if not links:
-            has_signal = bool(note["domains"] or note["tags"] or note["apple_folder"])
-            if has_signal:
-                n_sem_links += 1
-            else:
-                n_sem_sinal += 1
-            continue
 
         fp = note["path"]
         if not fp.exists():
@@ -440,17 +453,27 @@ def main() -> bool:
         try:
             original = fp.read_text(encoding="utf-8", errors="ignore")
             updated  = add_links_section(original, links)
+
             if updated == original:
-                n_ja_linkada += 1
+                if links:
+                    n_ja_linkada += 1
+                elif not links:
+                    had_section = bool(_LINKS_SECTION_RE.search(original))
+                    if had_section:
+                        n_limpas += 1
+                    elif note["tags"]:
+                        n_sem_links += 1
+                    else:
+                        n_sem_sinal += 1
                 continue
 
             if not ARGS.dry_run:
                 fp.write_text(updated, encoding="utf-8")
 
-            for l in links:
-                backlinks[l.lower()].append(note["stem"])
-
-            linked += 1
+            if links:
+                linked += 1
+            else:
+                n_limpas += 1
 
         except Exception as e:
             clear_progress()
@@ -458,31 +481,18 @@ def main() -> bool:
 
     clear_progress()
 
-    # ── [ 4 ] Backlinks bidirecionais ─────────────────────────────────────────
-    log("[ 4 ] Aplicando backlinks bidirecionais...")
-    back_applied = 0
-    for target_lower, sources in backlinks.items():
-        if target_lower not in all_notes:
-            continue
-        fp = all_notes[target_lower]["path"]
-        if not fp.exists():
-            continue
-        try:
-            original = fp.read_text(encoding="utf-8", errors="ignore")
-            updated  = add_links_section(original, sources)
-            if updated != original and not ARGS.dry_run:
-                fp.write_text(updated, encoding="utf-8")
-                back_applied += 1
-        except Exception:
-            pass
+    # ── [ 4 ] MOC por domínio ─────────────────────────────────────────────────
+    log("[ 4 ] Gerando MOC por domínio...")
+    affected_domains = None
+    if dirty_paths and not ARGS.full:
+        affected_domains = set()
+        for n in all_notes.values():
+            if n["dirty"]:
+                affected_domains |= n["domains"]
+    moc_count = generate_moc(vault_root, all_notes, affected_domains)
 
-    # ── [ 5 ] MOC por domínio ─────────────────────────────────────────────────
-    log("[ 5 ] Gerando MOC por domínio...")
-    moc_count = generate_moc(vault_root, all_notes)
-
-    # D) Resumo detalhado
     log(
-        f"  → {linked} linkadas | {back_applied} backlinks | "
+        f"  → {linked} linkadas | {n_limpas} limpas (sem seção) | "
         f"{moc_count} MOC(s)"
     )
     log(
@@ -490,6 +500,24 @@ def main() -> bool:
         f"{n_sem_links} sem link | "
         f"{n_ja_linkada} já linkadas"
     )
+
+    if not ARGS.dry_run:
+        save_json(DIRTY_FILE, {
+            "generated_at": datetime.now().isoformat(),
+            "paths": [],
+        })
+        save_json(ORGANIZE_METRICS_FILE, {
+            "generated_at":     datetime.now().isoformat(),
+            "lixo":             lixo_count,
+            "linkadas":         linked,
+            "limpas":           n_limpas,
+            "mocs":             moc_count,
+            "sem_sinal":        n_sem_sinal,
+            "sem_links":        n_sem_links,
+            "ja_linkadas":      n_ja_linkada,
+            "max_inline_links": MAX_INLINE_LINKS,
+        })
+
     log("=" * 50)
     return True
 

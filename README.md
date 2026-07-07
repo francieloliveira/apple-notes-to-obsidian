@@ -38,61 +38,37 @@ cp config.example.py config.py
 Edite `config.py` se quiser paths personalizados:
 
 ```python
-VAULT_PATH = "~/VaultAI"  # Caminho para seu vault Obsidian
-SCRIPTS_DIR = "/usr/local/bin"
+VAULT_PATH = "~/VaultAI"       # Caminho para seu vault Obsidian
+VAULTAI_HOME = "~/IntegraNotesMacObsidian"  # Repositório local
 ```
 
-### 3. Instale os scripts
+### 3. Instale tudo
 
 ```bash
-sudo cp pipeline.py notes_to_obsidian.py organize_vault.py vault_menubar.py $SCRIPTS_DIR/
-sudo chmod +x $SCRIPTS_DIR/*.py
+chmod +x install.sh
+./install.sh
 ```
 
-### 4. Instale a dependência da menu bar
+O script cria um `.venv` local, instala dependências, configura os LaunchAgents
+(sync a cada 30 min + menu bar no login), cria o atalho `~/Applications/VaultAI.app`
+e rotaciona logs grandes.
+
+### 4. Verifique a menu bar
+
+Após o install, o ícone de **cubo** (BD) deve aparecer na menu bar automaticamente.
+
+Para reiniciar manualmente:
 
 ```bash
-pip3 install rumps
+# Opção 1 — atalho em Aplicações (recomendado)
+open ~/Applications/VaultAI.app
+
+# Opção 2 — direto pelo Python
+~/IntegraNotesMacObsidian/.venv/bin/python3 ~/IntegraNotesMacObsidian/vault_menubar.py
+
+# Opção 3 — reinstalar tudo
+./install.sh
 ```
-
-### 5. Configure os Launch Agents (opcional)
-
-Para rodar o pipeline automaticamente a cada 5 minutos e ter a menu bar sempre disponível,
-você precisará criar os arquivos `.plist` manualmente (não estão no repo, pois contêm paths locais).
-
-Crie `~/Library/LaunchAgents/com.vaultai.pipeline.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>          <string>com.vaultai.pipeline</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/pipeline.py</string>
-    </array>
-    <key>StartInterval</key>  <integer>300</integer>
-    <key>RunAtLoad</key>      <false/>
-    <key>StandardOutPath</key><string>/Users/SEU_USUARIO/.vault/launchd.log</string>
-    <key>StandardErrorPath</key><string>/Users/SEU_USUARIO/.vault/launchd.log</string>
-</dict>
-</plist>
-```
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.vaultai.pipeline.plist
-```
-
-> Substitua `SEU_USUARIO` pelo seu nome de usuário macOS.
-
-### 6. Inicie a menu bar
-
-```bash
-python3 $SCRIPTS_DIR/vault_menubar.py
-```
-
-O ícone 📓 aparecerá na menu bar. Clique para sincronizar manualmente ou acessar logs.
 
 ---
 
@@ -145,29 +121,55 @@ Edite `config.py` para adicionar seus próprios domínios.
 
 ### Via Menu Bar (Recomendado)
 
-Clique no ícone 📓 na menu bar:
+Clique no ícone de **cubo** na menu bar. O estado detalhado fica no menu dropdown:
 
-- **Sincronizar agora** — Executa sync imediato
-- **Sync completo (--full)** — Processa todo o vault, não apenas notas novas
-- **Dry run (simular)** — Mostra o que seria feito sem alterar nada
-- **Ver log do pipeline** — Abre terminal com tail do log
-- **Ver log do sync** — Log detalhado da exportação
-- **Abrir vault no Finder** — Abre a pasta do Obsidian
+```
+VaultAI
+— Status —
+●  Atualizado
+1 nova
+◷  Último sync há 5 min · 23s
+●  Automático: ativado · a cada 30 min
+─────────────────
+Sincronizar  ▸  Agora | Completo | Simular
+Abrir        ▸  Vault | Log pipeline | Log sync
+─────────────────
+— Configurações —
+✓ Sync automático (30 min) — Ativado
+✓ Iniciar com o sistema — Ativado
+Abrir atalho em Aplicações (VaultAI)
+─────────────────
+Sair
+```
+
+**Ações principais:**
+
+| Item | Descrição |
+|------|-----------|
+| **Sincronizar → Agora** | Sync imediato (apenas notas novas/modificadas) |
+| **Sincronizar → Completo** | Reprocessa todo o vault (`--full`) |
+| **Sincronizar → Simular** | Dry run — mostra o que seria feito |
+| **Sync automático** | Liga/desliga o agendamento a cada 30 min (✓ = ativo) |
+| **Iniciar com o sistema** | Liga/desliga abertura automática no login |
+| **Abrir atalho em Aplicações** | Abre o Finder em `VaultAI.app` |
+
+As preferências de sync e login são persistidas em `~/.vault/sync_paused` e
+`~/.vault/login_disabled`.
 
 ### Via Terminal
 
 ```bash
 # Sync normal (apenas notas novas/modificadas)
-python3 /usr/local/bin/pipeline.py
+~/IntegraNotesMacObsidian/.venv/bin/python3 ~/IntegraNotesMacObsidian/pipeline.py
 
-# Sync completo (reprocessa tudo)
-python3 /usr/local/bin/pipeline.py --full
+# Sync completo (reprocessa tudo + renomeia arquivos com note_id)
+~/IntegraNotesMacObsidian/.venv/bin/python3 ~/IntegraNotesMacObsidian/pipeline.py --full
 
 # Dry run (simulação)
-python3 /usr/local/bin/pipeline.py --dry-run
+~/IntegraNotesMacObsidian/.venv/bin/python3 ~/IntegraNotesMacObsidian/pipeline.py --dry-run
 
-# Verbose
-python3 /usr/local/bin/pipeline.py --verbose
+# Testes
+~/IntegraNotesMacObsidian/.venv/bin/python3 -m unittest discover -s tests
 ```
 
 ---
@@ -180,10 +182,16 @@ apple-notes-to-obsidian/
 ├── notes_to_obsidian.py     # Export Apple Notes → Markdown
 ├── organize_vault.py        # Organização e links
 ├── vault_menubar.py         # App da menu bar
+├── utils.py                 # Utilitários (logs, nomes de arquivo, etc.)
+├── install.sh               # Instalação unificada (venv + LaunchAgents + atalho)
+├── requirements.txt         # Dependências Python
+├── assets/
+│   ├── menubar_icon.png     # Ícone do cubo na menu bar
+│   └── generate_menubar_icon.py
+├── tests/                   # Testes unitários
 ├── config.py                # Configuração centralizada (não versionado)
 ├── config.example.py        # Template de configuração
 ├── sanitize_for_github.py   # Script de sanitização para publicação
-├── .gitignore
 └── README.md
 ```
 
@@ -196,7 +204,8 @@ apple-notes-to-obsidian/
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
 | `VAULT_PATH` | `~/VaultAI` | Caminho do vault Obsidian |
-| `SCRIPTS_DIR` | `/usr/local/bin` | Onde os scripts estão instalados |
+| `SCRIPTS_DIR` | `~/IntegraNotesMacObsidian` | Diretório dos scripts |
+| `VAULTAI_HOME` | `~/IntegraNotesMacObsidian` | Repositório + `.venv` |
 
 ### Arquivos de Estado (não versionados)
 
@@ -207,10 +216,15 @@ O VaultAI mantém estado em `~/.vault/`:
 ├── pipeline.log           # Log do orquestrador
 ├── sync.log               # Log detalhado do sync
 ├── organize.log           # Log da organização
+├── menubar.log            # Log do app da menu bar
 ├── status.json            # Status atual (lido pela menu bar)
+├── sync_paused            # Presente = sync automático desativado
+├── login_disabled         # Presente = não abrir no login
 ├── notes_state.json       # Estado das notas (timestamps)
 ├── notes_ids.json         # Mapeamento de IDs
 ├── vault_dirty.json       # Notas modificadas (delta)
+├── note_paths.json        # note_id → caminho do .md
+├── organize_metrics.json  # Estatísticas do organize
 └── sync_checkpoint.json   # Checkpoint para resume
 ```
 
@@ -223,11 +237,32 @@ Estes arquivos são ignorados pelo `.gitignore` — não os versionar.
 ### Menu bar não aparece
 
 ```bash
-# Verifique se rumps está instalado
-pip3 install rumps
+# Recomendado — atalho criado pelo install.sh
+open ~/Applications/VaultAI.app
 
-# Rode manualmente para ver erros
-python3 /usr/local/bin/vault_menubar.py
+# Alternativas
+./install.sh
+~/IntegraNotesMacObsidian/.venv/bin/python3 ~/IntegraNotesMacObsidian/vault_menubar.py
+```
+
+Se você desativou **Iniciar com o sistema**, o ícone some ao fechar — use o
+`VaultAI.app` em `~/Applications/` para reabrir.
+
+### Sync automático não pausa / retoma
+
+O estado é persistido em `~/.vault/sync_paused`. Se o toggle falhar, verifique:
+
+```bash
+# Pausar manualmente
+touch ~/.vault/sync_paused
+launchctl bootout gui/$(id -u)/com.vaultai.pipeline
+
+# Retomar manualmente
+rm -f ~/.vault/sync_paused
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vaultai.pipeline.plist
+
+# Log de erros do menu bar
+cat ~/.vault/menubar.log
 ```
 
 ### Sync falha com erro de AppleScript
@@ -385,6 +420,42 @@ Contribuições são bem-vindas! Abra uma issue ou PR para:
 ---
 
 ## 📝 Changelog
+
+### v1.5.0 (2026-07) — Menu bar redesenhada
+- Ícone fixo de cubo (BD) na menu bar; status detalhado no dropdown
+- Menu reorganizado com seções, submenus e checkmarks nativos do macOS
+- Sync automático com preferência persistida (`~/.vault/sync_paused`)
+- Correção do toggle de pausa (não reativa mais o sync ao reiniciar o app)
+- `launchctl bootstrap/bootout` com verificação real do estado do agente
+- **Iniciar com o sistema** com preferência persistida (`~/.vault/login_disabled`)
+- Atalho `~/Applications/VaultAI.app` para reabrir o menu bar após desativar login
+- Ícone gerado em `assets/menubar_icon.png` (template para tema claro/escuro)
+
+### v1.4.0 (2026-07) — Política B de títulos
+- Arquivos legíveis: `Backup & Restore.md` (sem `_a1b2c3d4` no nome)
+- Colisão de títulos: `daily (Canal Motorista).md`
+- URLs como título viram slug: `premium-dsv-outsystems.petrobras.com.br-S10865.md`
+- `aliases:` preserva nomes antigos para links no Obsidian
+- Organize linka pelo nome legível; busca no texto usa `title` do frontmatter
+
+### v1.3.0 (2026-07)
+- ~~Arquivos com sufixo `note_id`~~ (substituído pela política B em v1.4)
+- `note_paths.json` rastreia caminho de cada nota; migra arquivos legados automaticamente
+- Checkpoint corrigido (resume por `note_id`)
+- Sync skip limpa `vault_dirty.json` e zera métricas
+- Pipeline independente do menubar (fechar UI não pausa sync)
+- Organize indexa por `note_id`; limpa dirty após processar
+- `organize_metrics.json` com estatísticas da organização
+- MOCs delta: só domínios afetados no modo incremental
+- Logs abertos no TextEdit; testes em `tests/`
+
+### v1.2.0 (2026)
+- `install.sh` unificado: venv, deploy, LaunchAgents e rotação de logs
+- `requirements.txt` com dependências documentadas
+- Rotação automática de logs em `~/.vault/` (> 5 MB)
+- Python unificado via `.venv` (corrige 3 interpretadores diferentes)
+- LaunchAgent legado `com.franciel.vault-menubar` migrado para `com.vaultai.menubar`
+- Menu bar usa `VAULT_PATH` do `config.py` (não mais hardcoded)
 
 ### v1.1.0 (2025)
 - Integração MCP com Claude Desktop via Obsidian Local REST API
