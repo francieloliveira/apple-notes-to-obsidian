@@ -18,13 +18,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import sys as _sys
-import os as _os
-_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
     SCRIPTS_DIR, LOCK_FILE, PIPELINE_LOG as LOG_FILE,
-    STATUS_FILE, METRICS_FILE, STEP_TIMEOUT,
+    STATUS_FILE, METRICS_FILE, ORGANIZE_METRICS_FILE, STEP_TIMEOUT,
+    STATE_DIR, LOG_MAX_BYTES, LOG_BACKUPS,
 )
+from utils import ensure_state_dir, rotate_logs_in_dir
 
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -125,7 +125,10 @@ def main():
     if args.full:    extra.append("--full")
     if args.verbose: extra.append("--verbose")
 
-    Path(os.path.expanduser("~/.vault")).mkdir(parents=True, exist_ok=True)
+    ensure_state_dir(STATE_DIR)
+    rotated = rotate_logs_in_dir(STATE_DIR, max_bytes=LOG_MAX_BYTES, backups=LOG_BACKUPS)
+    if rotated:
+        log(f"Logs rotacionados: {rotated} arquivo(s)")
 
     log("=" * 55)
     log("=== PIPELINE INICIADO" + (" [DRY RUN]" if args.dry_run else "") + " ===")
@@ -164,10 +167,12 @@ def main():
         elapsed = time.time() - t_start
 
         # Lê métricas gravadas pelo sync
-        metrics = _read_sync_metrics()
-        criadas   = metrics.get("criadas", 0)
+        metrics     = _read_sync_metrics()
+        org_metrics = _read_organize_metrics()
+        criadas     = metrics.get("criadas", 0)
         atualizadas = metrics.get("atualizadas", 0)
-        erros     = metrics.get("erros", 0)
+        erros       = metrics.get("erros", 0)
+        skipped     = metrics.get("skipped", False)
 
         if not org_ok:
             save_status("error", "Organização falhou", metrics)
@@ -186,12 +191,24 @@ def main():
         if atualizadas: parts.append(f"{atualizadas} atualizada{'s' if atualizadas != 1 else ''}")
         if erros:       parts.append(f"{erros} erro{'s' if erros != 1 else ''}")
 
-        summary  = "  ·  ".join(parts) if parts else "Tudo atualizado"
+        if skipped and not parts:
+            summary = "Sem mudanças no Apple Notes"
+        else:
+            summary = "  ·  ".join(parts) if parts else "Tudo atualizado"
+
+        org_linked = org_metrics.get("linkadas", 0)
+        if org_linked and not skipped:
+            summary += f"  ·  {org_linked} link(s)"
+
         subtitle = f"concluído em {elapsed:.0f}s"
 
-        save_status("ok", summary, {**metrics, "elapsed_s": round(elapsed, 1)})
+        save_status("ok", summary, {
+            **metrics,
+            "organize": org_metrics,
+            "elapsed_s": round(elapsed, 1),
+        })
 
-        if not args.dry_run:
+        if not args.dry_run and not (skipped and not parts and not org_linked):
             notify_rich(
                 "VaultAI",
                 subtitle,
@@ -209,15 +226,22 @@ def main():
         release_lock()
 
 
-def _read_sync_metrics() -> dict:
-    """Lê metrics.json gravado pelo sync. Robusto: sem parsing de log."""
+def _read_json_file(path: str) -> dict:
     try:
-        p = Path(METRICS_FILE)
+        p = Path(path)
         if p.exists():
             return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         pass
     return {}
+
+
+def _read_sync_metrics() -> dict:
+    return _read_json_file(METRICS_FILE)
+
+
+def _read_organize_metrics() -> dict:
+    return _read_json_file(ORGANIZE_METRICS_FILE)
 
 if __name__ == "__main__":
     main()

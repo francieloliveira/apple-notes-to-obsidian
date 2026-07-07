@@ -25,9 +25,14 @@ import os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from config import (
     VAULT_PATH, SYNC_ROOT, STATE_FILE, IDS_FILE, DIRTY_FILE,
-    CHECKPOINT_FILE, METRICS_FILE, SYNC_LOG as LOG_FILE,
+    CHECKPOINT_FILE, METRICS_FILE, PATHS_FILE, SYNC_LOG as LOG_FILE,
     TIMEZONE, FLAT_FOLDERS, FETCH_WORKERS, CHECKPOINT_EVERY,
     PROGRESS_FILE,
+)
+from utils import (
+    load_json, save_json, empty_sync_metrics,
+    resolve_human_note_path, sanitize_title_for_filename,
+    format_aliases_yaml, fix_obsidian_embeds, repair_vault_image_embeds,
 )
 
 # ─── CONSTANTES INTERNAS ──────────────────────────────────────────────────────
@@ -98,24 +103,6 @@ tell application "Notes"
             set mdate  to modification date of aNote
             set output to output & nid & "|||" & ntitle & "|||" & fid & "|||" & (mdate as string) & "\n"
         end repeat
-    end repeat
-    return output
-end tell
-"""
-
-# Exporta o corpo de uma lista de note_ids separados por vírgula
-# Retorna blocos separados por <<<NOTE>>>
-AS_FETCH_BATCH = r"""
-tell application "Notes"
-    set noteIds to {IDS_PLACEHOLDER}
-    set output to ""
-    repeat with nid in noteIds
-        try
-            set matchNote to first note whose id is nid
-            set nbody  to body of matchNote
-            set mdate  to modification date of matchNote
-            set output to output & nid & "|||" & (mdate as string) & "||VAULTBODY||" & nbody & "||VAULTNOTE||"
-        end try
     end repeat
     return output
 end tell
@@ -236,27 +223,9 @@ def quit_notes_if_we_opened():
         except Exception:
             pass
 
-def load_json(path: str) -> dict:
-    p = Path(path)
-    if p.exists():
-        with open(p) as f:
-            return json.load(f)
-    return {}
-
-def save_json(path: str, data: dict):
-    """
-    Escrita atômica: grava num .tmp e faz os.replace() — operação POSIX
-    atômica. Se o processo morrer no meio, o arquivo original fica intacto.
-    """
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)  # atômico no macOS/Linux
-
 def sanitize(name: str) -> str:
-    safe = re.sub(r'[\\/*?:"<>|]', "-", name)
-    safe = safe.strip(". ")
-    return safe[:100] or "sem-nome"
+    """Sanitiza pastas e anexos — mesma política legível dos títulos."""
+    return sanitize_title_for_filename(name)
 
 def normalize_date(d: str) -> str:
     """
@@ -284,7 +253,7 @@ def load_checkpoint() -> dict:
         return {}
     return data
 
-def save_checkpoint(pending_ids: list, state: dict, ids: dict,
+def save_checkpoint(pending_ids: list, state: dict, ids: dict, paths: dict,
                     dirty_paths: list, created: int, updated: int):
     """Salva checkpoint de forma atômica."""
     save_json(CHECKPOINT_FILE, {
@@ -292,6 +261,7 @@ def save_checkpoint(pending_ids: list, state: dict, ids: dict,
         "pending_ids": pending_ids,
         "state":       state,
         "ids":         ids,
+        "paths":       paths,
         "dirty_paths": dirty_paths,
         "created":     created,
         "updated":     updated,
@@ -347,7 +317,7 @@ def extract_images(html: str, attachments_dir: Path,
             except Exception:
                 return full_tag   # falhou ao decodificar — mantém a tag
 
-        return f"![[{filename}]]"
+        return f"![[_attachments/{filename}]]"
 
     # Captura <img ... src="data:..." ...> com aspas duplas ou simples
     pattern = r'<img[^>]+src="(data:image/[^"]+)"[^>]*>|<img[^>]+src=\'(data:image/[^\']+)\'[^>]*>'
@@ -399,8 +369,13 @@ def html_to_markdown(html: str, attachments_dir: Path = None,
         t, _ = extract_images(t, attachments_dir, note_title)
 
     if _HAS_MARKDOWNIFY:
-        return _md_lib(t)
-    return _html_to_markdown_fallback(t)
+        result = _md_lib(t)
+    else:
+        result = _html_to_markdown_fallback(t)
+
+    if attachments_dir is not None:
+        result = fix_obsidian_embeds(result, attachments_dir.parent)
+    return result
 
 # ── Árvore de pastas ──────────────────────────────────────────────────────────
 
@@ -560,36 +535,38 @@ def note_is_ours(fp: Path) -> bool:
     except Exception:
         return False
 
+
 def write_note(title: str, segments: list, body_html: str,
                mod_date: str, note_id: str,
+               paths_map: dict,
                tags: list = None) -> Path:
     """
-    Converte HTML → Markdown (extraindo imagens), escreve o .md no vault.
-    Imagens são salvas em _attachments/ dentro da mesma pasta da nota.
-    tags: lista de strings com as etiquetas do Apple Notes (macOS 13+).
+    Política B: arquivo legível (sem hash), aliases para nomes antigos,
+    colisão resolvida com sufixo de pasta.
     """
-    d  = vault_dir(segments)
-    fp = d / (sanitize(title) + ".md")
+    vault_root = Path(VAULT_PATH)
+    target_dir = vault_dir(segments)
 
-    if fp.exists() and not note_is_ours(fp):
-        raise FileExistsError(fp)
+    fp, aliases = resolve_human_note_path(
+        title, segments, note_id, paths_map, vault_root,
+        target_dir, FLAT_FOLDERS, dry_run=ARGS.dry_run,
+    )
 
     if ARGS.dry_run:
         return fp
 
-    # Pasta de anexos: mesma pasta da nota / _attachments
-    attachments_dir = d / "_attachments"
+    attachments_dir = fp.parent / "_attachments"
+    folder_path     = "/".join(segments)
+    content         = html_to_markdown(body_html,
+                                       attachments_dir=attachments_dir,
+                                       note_title=title)
 
-    folder_path = "/".join(segments)
-    content     = html_to_markdown(body_html,
-                                   attachments_dir=attachments_dir,
-                                   note_title=title)
-
-    # Serializa tags no formato YAML de lista
-    tags_yaml = ""
+    tags_yaml    = ""
     if tags:
         tag_lines = "\n".join(f'  - "{t}"' for t in tags)
         tags_yaml = f"tags:\n{tag_lines}\n"
+
+    aliases_yaml = format_aliases_yaml(aliases)
 
     fm = (f'---\n'
           f'title: "{title}"\n'
@@ -598,9 +575,12 @@ def write_note(title: str, segments: list, body_html: str,
           f'note_id: "{note_id}"\n'
           f'synced_at: "{datetime.now(ZoneInfo(TIMEZONE)).isoformat()}"\n'
           f'apple_notes_modified: "{mod_date}"\n'
+          f'{aliases_yaml}'
           f'{tags_yaml}'
           f'---\n\n')
     fp.write_text(fm + content, encoding="utf-8")
+
+    paths_map[note_id] = str(fp.relative_to(vault_root))
     return fp
 
 # ── Verificação rápida do banco do Notes ─────────────────────────────────────
@@ -638,6 +618,11 @@ def sync():
     # Verificação rápida: banco do Notes mudou desde o último sync?
     # Feita ANTES de abrir o Notes — se não mudou, encerramos imediatamente.
     if not ARGS.full and not notes_db_changed():
+        save_json(DIRTY_FILE, {
+            "generated_at": datetime.now().isoformat(),
+            "paths": [],
+        })
+        save_json(METRICS_FILE, empty_sync_metrics())
         log("=== sync concluido (sem mudanças) ===")
         return True
 
@@ -651,6 +636,7 @@ def sync():
 
         state = {} if ARGS.full else load_json(STATE_FILE)
         ids   = {} if ARGS.full else load_json(IDS_FILE)
+        paths = {} if ARGS.full else load_json(PATHS_FILE)
 
         log("2/4  Listando metadados...")
         all_meta = list_meta()
@@ -680,22 +666,18 @@ def sync():
         pending_ids_now = [n[0] for n in pending]
 
         if ckpt and set(ckpt.get("pending_ids", [])) == set(pending_ids_now):
-            already_done = set(ckpt["pending_ids"]) - set(
-                n[0] for n in pending if ckpt["state"].get(f"{n[2]}/{n[1]}") != n[3]
-            )
-            remaining = [n for n in pending if n[0] not in set(ckpt.get("state", {}).values())]
-
-            # Retoma estado do checkpoint
             state       = ckpt["state"]
             ids         = ckpt["ids"]
+            paths       = ckpt.get("paths", paths)
             dirty_paths = ckpt["dirty_paths"]
             created     = ckpt["created"]
             updated     = ckpt["updated"]
 
-            # Filtra pending para só o que ainda não foi gravado
-            done_keys = set(state.keys())
-            pending   = [n for n in pending
-                         if f"{n[2]}/{n[1]}" not in done_keys]
+            done_ids = {
+                k for k in state.keys()
+                if k != "_last_sync_epoch"
+            }
+            pending  = [n for n in pending if n[0] not in done_ids]
 
             resumed = len(pending_ids_now) - len(pending)
             if resumed:
@@ -710,10 +692,20 @@ def sync():
 
         if not pending:
             log("     Todas as notas já gravadas (via checkpoint).")
-            save_json(DIRTY_FILE, {
-                "generated_at": datetime.now().isoformat(),
-                "paths": dirty_paths
-            })
+            if not ARGS.dry_run:
+                state["_last_sync_epoch"] = time.time()
+                save_json(STATE_FILE, state)
+                save_json(IDS_FILE, ids)
+                save_json(PATHS_FILE, paths)
+                save_json(DIRTY_FILE, {
+                    "generated_at": datetime.now().isoformat(),
+                    "paths": dirty_paths,
+                })
+                save_json(METRICS_FILE, {
+                    "generated_at": datetime.now().isoformat(),
+                    "criadas": created, "atualizadas": updated,
+                    "protegidas": 0, "erros": 0,
+                })
             clear_checkpoint()
             log("=== sync concluido ===")
             return True
@@ -749,7 +741,8 @@ def sync():
                 mod_date_to_save  = fetched[1] if fetched[1] else mod_date
                 tags              = fetched[2] if len(fetched) > 2 else []
                 fp                = write_note(title, segments, body_html,
-                                               mod_date_to_save, note_id, tags)
+                                               mod_date_to_save, note_id,
+                                               paths, tags)
 
                 if not ARGS.dry_run:
                     state[state_key] = normalize_date(mod_date_to_save)  # normalizado para comparação estável
@@ -766,7 +759,7 @@ def sync():
                 # ── Checkpoint periódico ───────────────────────────────────────
                 if not ARGS.dry_run and i % CHECKPOINT_EVERY == 0:
                     remaining_ids = [n[0] for n in pending[i:]]
-                    save_checkpoint(remaining_ids, state, ids,
+                    save_checkpoint(remaining_ids, state, ids, paths,
                                     dirty_paths, created, updated)
                     log(f"  .. checkpoint: {i}/{total_w} notas gravadas",
                         verbose_only=True)
@@ -791,6 +784,7 @@ def sync():
             state["_last_sync_epoch"] = time.time()
             save_json(STATE_FILE, state)
             save_json(IDS_FILE, ids)
+            save_json(PATHS_FILE, paths)
             save_json(DIRTY_FILE, {
                 "generated_at": datetime.now().isoformat(),
                 "paths": dirty_paths
@@ -831,7 +825,13 @@ def main():
     parser.add_argument("--dry-run",  action="store_true")
     parser.add_argument("--full",     action="store_true")
     parser.add_argument("--verbose",  action="store_true")
+    parser.add_argument("--repair-images", action="store_true",
+                        help="Corrige wikilinks de imagem no vault existente")
     ARGS = parser.parse_args()
+    if ARGS.repair_images:
+        n = repair_vault_image_embeds(Path(VAULT_PATH))
+        print(f"Reparados: {n} arquivo(s)")
+        sys.exit(0)
     ok = sync()
     sys.exit(0 if ok else 1)
 
