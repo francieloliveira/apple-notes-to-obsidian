@@ -38,6 +38,25 @@ def save_json(path: str | Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def _preferences_path(state_dir: str | Path) -> Path:
+    return Path(state_dir) / "preferences.json"
+
+
+def load_preferences(state_dir: str | Path) -> dict:
+    """
+    Overlay de preferências editáveis via UI (menu bar), sobrepondo valores
+    de config.py em tempo de execução sem precisar reescrever o módulo.
+    """
+    return load_json(_preferences_path(state_dir))
+
+
+def save_preference(state_dir: str | Path, key: str, value) -> None:
+    path = _preferences_path(state_dir)
+    prefs = load_json(path)
+    prefs[key] = value
+    save_json(path, prefs)
+
+
 def rotate_log(path: str | Path, max_bytes: int = 5 * 1024 * 1024, backups: int = 3) -> bool:
     p = Path(path)
     if not p.exists() or p.stat().st_size <= max_bytes:

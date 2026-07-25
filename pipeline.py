@@ -118,12 +118,17 @@ def main():
     parser.add_argument("--dry-run",  action="store_true")
     parser.add_argument("--full",     action="store_true")
     parser.add_argument("--verbose",  action="store_true")
+    parser.add_argument("--folder",   default=None,
+                        help="Restringe o passo de sync a uma pasta (repassado só ao sync, não ao organize)")
     args = parser.parse_args()
 
-    extra = []
-    if args.dry_run: extra.append("--dry-run")
-    if args.full:    extra.append("--full")
-    if args.verbose: extra.append("--verbose")
+    common = []
+    if args.dry_run: common.append("--dry-run")
+    if args.full:    common.append("--full")
+    if args.verbose: common.append("--verbose")
+
+    sync_extra = common + (["--folder", args.folder] if args.folder else [])
+    organize_extra = common
 
     ensure_state_dir(STATE_DIR)
     rotated = rotate_logs_in_dir(STATE_DIR, max_bytes=LOG_MAX_BYTES, backups=LOG_BACKUPS)
@@ -143,7 +148,7 @@ def main():
         sync_ok = run_step(
             "sync",
             os.path.join(SCRIPTS_DIR, "notes_to_obsidian.py"),
-            extra
+            sync_extra
         )
 
         if not sync_ok:
@@ -161,7 +166,7 @@ def main():
         org_ok = run_step(
             "organize",
             os.path.join(SCRIPTS_DIR, "organize_vault.py"),
-            extra
+            organize_extra
         )
 
         elapsed = time.time() - t_start

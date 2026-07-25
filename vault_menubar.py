@@ -8,10 +8,11 @@ Requer: pip install rumps
 
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import rumps
@@ -19,14 +20,31 @@ import sys
 import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import (
-    STATUS_FILE, SCRIPTS_DIR, PIPELINE_LOG as LOG_FILE,
-    SYNC_LOG, POLL_SECS, VAULT_PATH, PYTHON_BIN,
-    AGENT_PLIST, MENUBAR_PLIST, PIPELINE_INTERVAL_SECS,
-    PIPELINE_LABEL, MENUBAR_LABEL, LEGACY_MENUBAR_LABEL,
-    PROGRESS_FILE, SYNC_PAUSED_FILE, LOGIN_DISABLED_FILE, LAUNCHER_PATH,
-    MENUBAR_ICON_PATH,
-)
+try:
+    from config import (
+        STATUS_FILE, SCRIPTS_DIR, PIPELINE_LOG as LOG_FILE,
+        SYNC_LOG, POLL_SECS, VAULT_PATH, PYTHON_BIN,
+        AGENT_PLIST, MENUBAR_PLIST, PIPELINE_INTERVAL_SECS,
+        PIPELINE_LABEL, MENUBAR_LABEL, LEGACY_MENUBAR_LABEL,
+        PROGRESS_FILE, SYNC_PAUSED_FILE, LOGIN_DISABLED_FILE, LAUNCHER_PATH,
+        MENUBAR_ICON_PATH, STATE_DIR, LOCK_FILE,
+    )
+except ModuleNotFoundError:
+    _alert = (
+        'display alert "VaultAI — configuração ausente" '
+        'message "config.py não encontrado. No diretório do projeto, rode:\\n\\n'
+        'cp config.example.py config.py" as critical'
+    )
+    subprocess.run(["osascript", "-e", _alert])
+    sys.exit(1)
+
+from utils import load_preferences, save_preference
+
+# Overlay de preferências editáveis pela UI (~/.vault/preferences.json)
+# sobrepõe valores de config.py sem precisar reescrever o módulo.
+_prefs = load_preferences(STATE_DIR)
+VAULT_PATH = _prefs.get("vault_path", VAULT_PATH)
+PIPELINE_INTERVAL_SECS = _prefs.get("pipeline_interval_secs", PIPELINE_INTERVAL_SECS)
 
 MENUBAR_SCRIPT = os.path.join(SCRIPTS_DIR, "vault_menubar.py")
 
@@ -165,8 +183,14 @@ class VaultMenuBar(rumps.App):
         self.sync_now     = rumps.MenuItem("Agora",              callback=self.run_sync)
         self.full_sync    = rumps.MenuItem("Completo",           callback=self.run_full_sync)
         self.dry_run_item = rumps.MenuItem("Simular (dry run)",  callback=self.run_dry_run)
+        self.folder_sync  = rumps.MenuItem("Pasta específica…",  callback=self.run_folder_sync)
+        self.cancel_sync  = rumps.MenuItem("Cancelar",           callback=None)
         self.sync_menu    = rumps.MenuItem("Sincronizar")
-        self.sync_menu.update([self.sync_now, self.full_sync, self.dry_run_item])
+        self.sync_menu.update([
+            self.sync_now, self.full_sync, self.dry_run_item, self.folder_sync,
+            rumps.separator,
+            self.cancel_sync,
+        ])
 
         self.open_vault    = rumps.MenuItem("Vault no Finder",   callback=self.open_vault_cb)
         self.open_log      = rumps.MenuItem("Log do pipeline",   callback=self.open_pipeline_log)
@@ -187,6 +211,18 @@ class VaultMenuBar(rumps.App):
             "Atalho para reabrir o app",
             callback=self.open_launcher_cb,
         )
+
+        # ── Preferências ──────────────────────────────────────────────────
+        self.edit_vault_path    = rumps.MenuItem("Vault Path…",        callback=self.edit_vault_path_cb)
+        self.edit_sync_interval = rumps.MenuItem("Intervalo de sync…", callback=self.edit_sync_interval_cb)
+        self.prefs_menu = rumps.MenuItem("Preferências")
+        self.prefs_menu.update([self.edit_vault_path, self.edit_sync_interval])
+
+        # ── Manutenção ────────────────────────────────────────────────────
+        self.release_lock_item = rumps.MenuItem(
+            "Liberar lock travado", callback=self.release_lock_cb,
+        )
+
         self.quit_item = rumps.MenuItem("Sair", callback=self.quit_app)
 
         self.menu = [
@@ -205,6 +241,10 @@ class VaultMenuBar(rumps.App):
             self.toggle_sync,
             self.toggle_login,
             self.open_launcher,
+            self.prefs_menu,
+            rumps.separator,
+            _section("— Manutenção —"),
+            self.release_lock_item,
             rumps.separator,
             self.quit_item,
         ]
@@ -218,10 +258,18 @@ class VaultMenuBar(rumps.App):
         self._apply_sync_preference()
         self._apply_login_preference()
 
+        # Aviso único: pasta do vault ainda não existe (será criada no 1º sync)
+        if not Path(os.path.expanduser(VAULT_PATH)).is_dir():
+            rumps.notification(
+                "VaultAI", "Vault ainda não existe",
+                f"'{VAULT_PATH}' será criado automaticamente no primeiro sync.",
+            )
+
         # Estado interno
         self._last_state    = "idle"
         self._running       = False
         self._last_updated  = None
+        self._last_ui       = None   # última UI totalmente calculada (p/ countdown)
         self._sync_started  = None   # timestamp de início do sync (para elapsed)
         self._proc          = None   # subprocesso do pipeline em execução
 
@@ -250,9 +298,14 @@ class VaultMenuBar(rumps.App):
         updated = data.get("updated_at", "")
         metrics = data.get("metrics", {})
 
-        # Não recalcula se nada mudou — mas durante sync sempre relê o progresso
+        schedule_text = self._schedule_label(updated, state)
+
+        # Não recalcula se nada mudou — mas a contagem regressiva precisa
+        # continuar avançando mesmo parado, e o progresso sempre relê durante sync.
         if updated == self._last_updated and state == self._last_state:
             if state != "running":
+                if self._last_ui is not None:
+                    self._pending_ui = {**self._last_ui, "schedule_text": schedule_text}
                 return
 
         self._last_updated = updated
@@ -310,11 +363,10 @@ class VaultMenuBar(rumps.App):
                 last_sync_text = f"◷  {updated[:16]}"
                 show_last_sync = True
 
-        schedule_text = self._schedule_label()
-
         # Armazena resultado para a thread principal aplicar
         self._pending_ui = {
             "status_text":    status_text,
+            "status_icon":    icon,
             "metrics_text":   metrics_text,
             "show_metrics":   show_metrics and bool(metrics_text),
             "progress_text":  progress_text,
@@ -324,6 +376,7 @@ class VaultMenuBar(rumps.App):
             "schedule_text":  schedule_text,
             "is_running":     (state == "running"),
         }
+        self._last_ui = self._pending_ui
 
     @rumps.timer(1)
     def _flush_ui(self, _):
@@ -337,6 +390,8 @@ class VaultMenuBar(rumps.App):
         self._pending_ui = None
 
         self.status_item.title = pending["status_text"]
+        if pending.get("status_icon"):
+            self.title = pending["status_icon"]   # visível na barra sem abrir o dropdown
 
         self.metrics_item.title = pending["metrics_text"] or ""
         self.metrics_item.hidden = not pending["show_metrics"]
@@ -354,6 +409,8 @@ class VaultMenuBar(rumps.App):
         self.sync_now.set_callback(None if is_running else self.run_sync)
         self.full_sync.set_callback(None if is_running else self.run_full_sync)
         self.dry_run_item.set_callback(None if is_running else self.run_dry_run)
+        self.folder_sync.set_callback(None if is_running else self.run_folder_sync)
+        self.cancel_sync.set_callback(self.cancel_sync_cb if is_running else None)
 
     def _read_progress(self) -> dict:
         try:
@@ -401,7 +458,10 @@ class VaultMenuBar(rumps.App):
             try:
                 python = PYTHON_BIN if os.path.isfile(PYTHON_BIN) else sys.executable
                 cmd = [python, PIPELINE] + extra_args
-                self._proc = subprocess.Popen(cmd)
+                # Grupo de processos próprio: permite matar o pipeline.py e os
+                # subprocessos que ele dispara (notes_to_obsidian/organize_vault
+                # e o osascript deles) de uma vez, ao cancelar.
+                self._proc = subprocess.Popen(cmd, start_new_session=True)
                 self._proc.wait()
             except Exception as e:
                 rumps.notification("VaultAI", "Erro", str(e))
@@ -420,6 +480,53 @@ class VaultMenuBar(rumps.App):
 
     def run_dry_run(self, _):
         self._run_pipeline(["--dry-run"], "Simulando")
+
+    def run_folder_sync(self, _):
+        if self._running:
+            rumps.notification("VaultAI", "Pipeline em execução",
+                               "Aguarde o sync atual terminar.")
+            return
+        response = rumps.Window(
+            message="Nome exato da pasta (como aparece no Apple Notes):",
+            title="Sincronizar pasta específica",
+            default_text="",
+            ok="Sincronizar",
+            cancel="Cancelar",
+            dimensions=(300, 20),
+        ).run()
+        if not response.clicked:
+            return
+        name = response.text.strip()
+        if not name:
+            return
+        self._run_pipeline(["--folder", name], f"Sincronizando '{name}'")
+
+    def cancel_sync_cb(self, _):
+        proc = self._proc
+        if proc is None:
+            rumps.notification("VaultAI", "Cancelar", "Nenhum sync em execução.")
+            return
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(pgid, signal.SIGKILL)
+                proc.wait(timeout=5)
+        except Exception as e:
+            self._log_launchctl(f"cancelar sync -> exception: {e}")
+        finally:
+            # SIGTERM não garante que o finally do pipeline.py rode — limpa
+            # lock/progresso aqui pra não deixar estado travado.
+            Path(LOCK_FILE).unlink(missing_ok=True)
+            Path(PROGRESS_FILE).unlink(missing_ok=True)
+            self._proc = None
+            self._running = False
+            self._last_updated = None
+            self.status_item.title = f"{STATUS_ICON['idle']}  Cancelado"
+            self.progress_item.hidden = True
+        rumps.notification("VaultAI", "Sync cancelado", "")
 
     # ── Ações de log / vault ───────────────────────────────────────────────
 
@@ -626,10 +733,23 @@ class VaultMenuBar(rumps.App):
             </plist>
         """), encoding="utf-8")
 
-    def _schedule_label(self) -> str:
+    def _schedule_label(self, updated: str = "", state: str = "") -> str:
         if self._sync_paused():
             return "○  Automático: desativado"
-        return f"●  Automático: ativado · a cada {SYNC_INTERVAL_MIN} min"
+        label = f"●  Automático: ativado · a cada {SYNC_INTERVAL_MIN} min"
+        if state != "running" and updated:
+            try:
+                dt = datetime.fromisoformat(updated)
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                remaining = (dt + timedelta(seconds=PIPELINE_INTERVAL_SECS) - datetime.now()).total_seconds()
+                if remaining > 0:
+                    label += f"  ·  próximo em ~{max(1, int(remaining // 60))} min"
+                else:
+                    label += "  ·  próximo em breve"
+            except Exception:
+                pass
+        return label
 
     def _refresh_toggles(self):
         sync_on = not self._sync_paused()
@@ -719,6 +839,74 @@ class VaultMenuBar(rumps.App):
             )
         self._refresh_toggles()
         self._compute_status()
+
+    def edit_vault_path_cb(self, _):
+        global VAULT_PATH
+        response = rumps.Window(
+            message="Caminho da pasta do vault Obsidian:",
+            title="Vault Path",
+            default_text=VAULT_PATH,
+            ok="Salvar",
+            cancel="Cancelar",
+            dimensions=(320, 20),
+        ).run()
+        if not response.clicked:
+            return
+        new_path = response.text.strip()
+        if not new_path:
+            return
+        save_preference(STATE_DIR, "vault_path", new_path)
+        VAULT_PATH = new_path
+        rumps.notification("VaultAI", "Vault Path atualizado", new_path)
+
+    def edit_sync_interval_cb(self, _):
+        global PIPELINE_INTERVAL_SECS, SYNC_INTERVAL_MIN
+        response = rumps.Window(
+            message="Intervalo do sync automático, em minutos:",
+            title="Intervalo de sync",
+            default_text=str(SYNC_INTERVAL_MIN),
+            ok="Salvar",
+            cancel="Cancelar",
+            dimensions=(200, 20),
+        ).run()
+        if not response.clicked:
+            return
+        text = response.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            rumps.notification(
+                "VaultAI", "Intervalo inválido",
+                "Informe um número inteiro de minutos maior que zero.",
+            )
+            return
+        minutes = int(text)
+        PIPELINE_INTERVAL_SECS = minutes * 60
+        SYNC_INTERVAL_MIN = minutes
+        save_preference(STATE_DIR, "pipeline_interval_secs", PIPELINE_INTERVAL_SECS)
+        self._refresh_toggles()
+
+        # Se o agente automático já está carregado, reescreve e recarrega
+        # o plist pra aplicar o novo intervalo sem precisar reiniciar o app.
+        if self._plist_exists(AGENT_PLIST) and not self._sync_paused():
+            self._launchctl_unload(AGENT_PLIST, PIPELINE_LABEL)
+            self._write_pipeline_plist()
+            self._launchctl_load(AGENT_PLIST)
+
+        rumps.notification("VaultAI", "Intervalo de sync atualizado", f"A cada {minutes} min")
+
+    def release_lock_cb(self, _):
+        lock = Path(LOCK_FILE)
+        if not lock.exists():
+            rumps.notification("VaultAI", "Liberar lock", "Nenhum lock ativo no momento.")
+            return
+        try:
+            age = time.time() - lock.stat().st_mtime
+        except Exception:
+            age = 0
+        lock.unlink(missing_ok=True)
+        rumps.notification(
+            "VaultAI", "Lock liberado",
+            f"Lock removido (estava ativo há {age:.0f}s).",
+        )
 
     def quit_app(self, _):
         # 1. Encerra o sync que estiver rodando agora (se houver)

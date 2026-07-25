@@ -28,7 +28,14 @@ from config import (
     LIXO_NAME_PATTERNS, DOMAIN_KEYWORDS,
     MAX_INLINE_LINKS, MIN_TITLE_CHARS, STATE_DIR,
 )
-from utils import load_json, save_json, extract_note_id, ensure_state_dir, ScriptLogger
+from utils import (
+    load_json, save_json, extract_note_id, ensure_state_dir, ScriptLogger,
+    load_preferences,
+)
+
+# Overlay de preferências editáveis pela menu bar (~/.vault/preferences.json)
+# sobrepõe valores de config.py sem precisar reescrever o módulo.
+VAULT_PATH = load_preferences(STATE_DIR).get("vault_path", VAULT_PATH)
 
 MOC_DIR = "_index"   # pasta dos índices dentro do vault
 

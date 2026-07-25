@@ -33,7 +33,12 @@ from utils import (
     load_json, save_json, empty_sync_metrics, ensure_state_dir, ScriptLogger,
     resolve_human_note_path, sanitize_title_for_filename,
     format_aliases_yaml, fix_obsidian_embeds, repair_vault_image_embeds,
+    load_preferences,
 )
+
+# Overlay de preferências editáveis pela menu bar (~/.vault/preferences.json)
+# sobrepõe valores de config.py sem precisar reescrever o módulo.
+VAULT_PATH = load_preferences(STATE_DIR).get("vault_path", VAULT_PATH)
 
 # ─── CONSTANTES INTERNAS ──────────────────────────────────────────────────────
 SEP_BODY = "||VAULTBODY||"   # impossível aparecer em conteúdo de nota
@@ -582,9 +587,10 @@ def notes_db_changed() -> bool:
 
 # ── Sync principal ────────────────────────────────────────────────────────────
 
-def sync(dry_run: bool = False, full: bool = False):
+def sync(dry_run: bool = False, full: bool = False, folder: str | None = None):
     ensure_state_dir(STATE_DIR)
     label = " [DRY RUN]" if dry_run else ""
+    label += f" [pasta: {folder}]" if folder else ""
     log(f"=== sync iniciado{label} ===")
 
     # Verificação rápida: banco do Notes mudou desde o último sync?
@@ -622,6 +628,14 @@ def sync(dry_run: bool = False, full: bool = False):
             state_key = nid   # usa o note_id diretamente como chave
             if state.get(state_key) != normalize_date(mdate) or full:
                 pending.append((nid, title, fid, mdate))
+
+        if folder:
+            folder_lower = folder.strip().lower()
+            pending = [
+                n for n in pending
+                if tree.get(n[2]) and tree[n[2]][-1].lower() == folder_lower
+            ]
+            log(f"     Filtrado para pasta '{folder}': {len(pending)} nota(s)")
 
         log(f"3/4  Notas a processar: {len(pending)} "
             f"(ignoradas: {len(all_meta) - len(pending)})")
@@ -799,13 +813,15 @@ def main():
     parser.add_argument("--verbose",  action="store_true")
     parser.add_argument("--repair-images", action="store_true",
                         help="Corrige wikilinks de imagem no vault existente")
+    parser.add_argument("--folder", default=None,
+                        help="Sincroniza só notas desta pasta (nome exato, sem hierarquia)")
     ARGS = parser.parse_args()
     _LOGGER = ScriptLogger(LOG_FILE, verbose=ARGS.verbose)
     if ARGS.repair_images:
         n = repair_vault_image_embeds(Path(VAULT_PATH))
         print(f"Reparados: {n} arquivo(s)")
         sys.exit(0)
-    ok = sync(dry_run=ARGS.dry_run, full=ARGS.full)
+    ok = sync(dry_run=ARGS.dry_run, full=ARGS.full, folder=ARGS.folder)
     sys.exit(0 if ok else 1)
 
 if __name__ == "__main__":

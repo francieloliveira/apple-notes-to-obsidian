@@ -50,6 +50,7 @@ logs/
 *.dirty.json
 notes_ids.json
 metrics.json
+preferences.json
 
 # Arquivos de configuração com dados pessoais
 config.py
