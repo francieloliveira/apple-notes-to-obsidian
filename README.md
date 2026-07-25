@@ -434,7 +434,7 @@ Contribuições são bem-vindas! Abra uma issue ou PR para:
 ### v1.4.0 (2026-07) — Política B de títulos
 - Arquivos legíveis: `Backup & Restore.md` (sem `_a1b2c3d4` no nome)
 - Colisão de títulos: `daily (Canal Motorista).md`
-- URLs como título viram slug: `premium-dsv-outsystems.empresa-exemplo.com.br-S10865.md`
+- URLs como título viram slug: `app.exemplo.com.br-S10865.md`
 - `aliases:` preserva nomes antigos para links no Obsidian
 - Organize linka pelo nome legível; busca no texto usa `title` do frontmatter
 

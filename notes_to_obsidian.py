@@ -27,10 +27,10 @@ from config import (
     VAULT_PATH, SYNC_ROOT, STATE_FILE, IDS_FILE, DIRTY_FILE,
     CHECKPOINT_FILE, METRICS_FILE, PATHS_FILE, SYNC_LOG as LOG_FILE,
     TIMEZONE, FLAT_FOLDERS, FETCH_WORKERS, CHECKPOINT_EVERY,
-    PROGRESS_FILE,
+    PROGRESS_FILE, STATE_DIR,
 )
 from utils import (
-    load_json, save_json, empty_sync_metrics,
+    load_json, save_json, empty_sync_metrics, ensure_state_dir, ScriptLogger,
     resolve_human_note_path, sanitize_title_for_filename,
     format_aliases_yaml, fix_obsidian_embeds, repair_vault_image_embeds,
 )
@@ -109,48 +109,19 @@ end tell
 """
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+# Log e barra de progresso vêm de utils.ScriptLogger (compartilhado com
+# organize_vault.py); a instância é criada em main() assim que ARGS existe.
 
-def ensure_dirs():
-    Path(os.path.expanduser("~/.vault")).mkdir(parents=True, exist_ok=True)
+_LOGGER: ScriptLogger | None = None
 
-def log(msg: str, verbose_only=False):
-    if verbose_only and not ARGS.verbose:
-        return
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}"
-    # Limpa linha do progress bar antes de imprimir log
-    print(f"\r{' ' * 80}\r{line}", flush=True)
-    with open(LOG_FILE, "a") as f:
-        f.write(line + "\n")
-
-# Linha de progresso atual (salva para saber se precisa limpar)
-_progress_active = False
+def log(msg: str, verbose_only: bool = False):
+    _LOGGER.log(msg, verbose_only=verbose_only)
 
 def progress(current: int, total: int, label: str = ""):
-    """
-    Imprime barra de progresso inline — fica na mesma linha,
-    nunca aparece no arquivo de log.
-    """
-    global _progress_active
-    pct    = current / total if total else 0
-    filled = int(pct * 25)
-    bar    = "█" * filled + "░" * (25 - filled)
-    # Trunca o label para caber em 80 cols totais
-    label_trunc = label[:35].ljust(35)
-    line = f"  [{bar}] {current:>4}/{total} {label_trunc}"
-    # Limpa a linha inteira antes de escrever (evita resíduos de texto anterior)
-    print(f"\r{' ' * 80}\r{line}", end="", flush=True)
-    _progress_active = True
-    if current >= total:
-        print()   # nova linha ao completar
-        _progress_active = False
+    _LOGGER.progress(current, total, label)
 
 def clear_progress():
-    """Limpa a linha de progresso se estiver ativa."""
-    global _progress_active
-    if _progress_active:
-        print(f"\r{' ' * 80}\r", end="", flush=True)
-        _progress_active = False
+    _LOGGER.clear_progress()
 
 def save_progress(current: int, total: int, criadas: int, atualizadas: int, erros: int):
     """Grava progresso em tempo real para o menu bar ler."""
@@ -539,7 +510,8 @@ def note_is_ours(fp: Path) -> bool:
 def write_note(title: str, segments: list, body_html: str,
                mod_date: str, note_id: str,
                paths_map: dict,
-               tags: list = None) -> Path:
+               tags: list = None,
+               dry_run: bool = False) -> Path:
     """
     Política B: arquivo legível (sem hash), aliases para nomes antigos,
     colisão resolvida com sufixo de pasta.
@@ -549,10 +521,10 @@ def write_note(title: str, segments: list, body_html: str,
 
     fp, aliases = resolve_human_note_path(
         title, segments, note_id, paths_map, vault_root,
-        target_dir, FLAT_FOLDERS, dry_run=ARGS.dry_run,
+        target_dir, FLAT_FOLDERS, dry_run=dry_run,
     )
 
-    if ARGS.dry_run:
+    if dry_run:
         return fp
 
     attachments_dir = fp.parent / "_attachments"
@@ -610,14 +582,14 @@ def notes_db_changed() -> bool:
 
 # ── Sync principal ────────────────────────────────────────────────────────────
 
-def sync():
-    ensure_dirs()
-    label = " [DRY RUN]" if ARGS.dry_run else ""
+def sync(dry_run: bool = False, full: bool = False):
+    ensure_state_dir(STATE_DIR)
+    label = " [DRY RUN]" if dry_run else ""
     log(f"=== sync iniciado{label} ===")
 
     # Verificação rápida: banco do Notes mudou desde o último sync?
     # Feita ANTES de abrir o Notes — se não mudou, encerramos imediatamente.
-    if not ARGS.full and not notes_db_changed():
+    if not full and not notes_db_changed():
         save_json(DIRTY_FILE, {
             "generated_at": datetime.now().isoformat(),
             "paths": [],
@@ -634,9 +606,9 @@ def sync():
         tree = build_folder_tree()
         log(f"     Pastas: {len(tree)}")
 
-        state = {} if ARGS.full else load_json(STATE_FILE)
-        ids   = {} if ARGS.full else load_json(IDS_FILE)
-        paths = {} if ARGS.full else load_json(PATHS_FILE)
+        state = {} if full else load_json(STATE_FILE)
+        ids   = {} if full else load_json(IDS_FILE)
+        paths = {} if full else load_json(PATHS_FILE)
 
         log("2/4  Listando metadados...")
         all_meta = list_meta()
@@ -648,7 +620,7 @@ def sync():
         pending = []
         for (nid, title, fid, mdate) in all_meta:
             state_key = nid   # usa o note_id diretamente como chave
-            if state.get(state_key) != normalize_date(mdate) or ARGS.full:
+            if state.get(state_key) != normalize_date(mdate) or full:
                 pending.append((nid, title, fid, mdate))
 
         log(f"3/4  Notas a processar: {len(pending)} "
@@ -662,7 +634,7 @@ def sync():
             return True
 
         # ── Verifica checkpoint de sessão anterior ─────────────────────────────
-        ckpt = {} if ARGS.full else load_checkpoint()
+        ckpt = {} if full else load_checkpoint()
         pending_ids_now = [n[0] for n in pending]
 
         if ckpt and set(ckpt.get("pending_ids", [])) == set(pending_ids_now):
@@ -692,7 +664,7 @@ def sync():
 
         if not pending:
             log("     Todas as notas já gravadas (via checkpoint).")
-            if not ARGS.dry_run:
+            if not dry_run:
                 state["_last_sync_epoch"] = time.time()
                 save_json(STATE_FILE, state)
                 save_json(IDS_FILE, ids)
@@ -711,7 +683,7 @@ def sync():
             return True
 
         # Etapa 3: busca corpos em lotes com retry
-        if ARGS.dry_run:
+        if dry_run:
             bodies = {}
         else:
             bodies = fetch_needed(pending, tree)
@@ -742,9 +714,9 @@ def sync():
                 tags              = fetched[2] if len(fetched) > 2 else []
                 fp                = write_note(title, segments, body_html,
                                                mod_date_to_save, note_id,
-                                               paths, tags)
+                                               paths, tags, dry_run=dry_run)
 
-                if not ARGS.dry_run:
+                if not dry_run:
                     state[state_key] = normalize_date(mod_date_to_save)  # normalizado para comparação estável
                     ids[state_key]   = note_id
                     dirty_paths.append(str(fp))
@@ -757,7 +729,7 @@ def sync():
                 save_progress(i, total_w, created, updated, errors)
 
                 # ── Checkpoint periódico ───────────────────────────────────────
-                if not ARGS.dry_run and i % CHECKPOINT_EVERY == 0:
+                if not dry_run and i % CHECKPOINT_EVERY == 0:
                     remaining_ids = [n[0] for n in pending[i:]]
                     save_checkpoint(remaining_ids, state, ids, paths,
                                     dirty_paths, created, updated)
@@ -778,7 +750,7 @@ def sync():
 
         clear_progress()
 
-        if not ARGS.dry_run:
+        if not dry_run:
             # Salva timestamp do sync bem-sucedido — usado por notes_db_changed()
             # na próxima execução para evitar abrir o Notes desnecessariamente.
             state["_last_sync_epoch"] = time.time()
@@ -820,7 +792,7 @@ def sync():
 ARGS = None
 
 def main():
-    global ARGS
+    global ARGS, _LOGGER
     parser = argparse.ArgumentParser(description="Sync Apple Notes → Obsidian")
     parser.add_argument("--dry-run",  action="store_true")
     parser.add_argument("--full",     action="store_true")
@@ -828,11 +800,12 @@ def main():
     parser.add_argument("--repair-images", action="store_true",
                         help="Corrige wikilinks de imagem no vault existente")
     ARGS = parser.parse_args()
+    _LOGGER = ScriptLogger(LOG_FILE, verbose=ARGS.verbose)
     if ARGS.repair_images:
         n = repair_vault_image_embeds(Path(VAULT_PATH))
         print(f"Reparados: {n} arquivo(s)")
         sys.exit(0)
-    ok = sync()
+    ok = sync(dry_run=ARGS.dry_run, full=ARGS.full)
     sys.exit(0 if ok else 1)
 
 if __name__ == "__main__":

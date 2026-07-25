@@ -54,6 +54,7 @@ metrics.json
 # Arquivos de configuração com dados pessoais
 config.py
 *.local.py
+*.local.json
 
 # Arquivos compactados (podem conter dados sensíveis)
 *.zip

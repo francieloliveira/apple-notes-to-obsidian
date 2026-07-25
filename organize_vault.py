@@ -26,9 +26,9 @@ from config import (
     ORGANIZE_METRICS_FILE,
     LIXO_DIR, MIN_CONTENT_CHARS,
     LIXO_NAME_PATTERNS, DOMAIN_KEYWORDS,
-    MAX_INLINE_LINKS, MIN_TITLE_CHARS,
+    MAX_INLINE_LINKS, MIN_TITLE_CHARS, STATE_DIR,
 )
-from utils import load_json, save_json, extract_note_id
+from utils import load_json, save_json, extract_note_id, ensure_state_dir, ScriptLogger
 
 MOC_DIR = "_index"   # pasta dos índices dentro do vault
 
@@ -49,38 +49,19 @@ _LINKS_SECTION_RE = re.compile(
 )
 
 # ── Logging / progresso ───────────────────────────────────────────────────────
+# utils.ScriptLogger (compartilhado com notes_to_obsidian.py); instância
+# criada no bloco __main__ assim que ARGS existe.
 
-def ensure_dirs():
-    Path(os.path.expanduser("~/.vault")).mkdir(parents=True, exist_ok=True)
+_LOGGER: ScriptLogger | None = None
 
 def log(msg: str, verbose_only: bool = False):
-    if verbose_only and not ARGS.verbose:
-        return
-    ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}"
-    print(f"\r{' ' * 80}\r{line}", flush=True)
-    with open(LOG_FILE, "a") as f:
-        f.write(line + "\n")
-
-_progress_active = False
+    _LOGGER.log(msg, verbose_only=verbose_only)
 
 def progress(i: int, total: int, label: str = ""):
-    global _progress_active
-    pct    = int(i / total * 100) if total else 0
-    filled = int(pct / 4)
-    bar    = "█" * filled + "░" * (25 - filled)
-    line   = f"  [{bar}] {i:>4}/{total}  {label[:38].ljust(38)}"
-    print(f"\r{' ' * 80}\r{line}", end="", flush=True)
-    _progress_active = True
-    if i >= total:
-        print()
-        _progress_active = False
+    _LOGGER.progress(i, total, label)
 
 def clear_progress():
-    global _progress_active
-    if _progress_active:
-        print(f"\r{' ' * 80}\r", end="", flush=True)
-        _progress_active = False
+    _LOGGER.clear_progress()
 
 # ── Frontmatter ───────────────────────────────────────────────────────────────
 
@@ -146,14 +127,14 @@ def is_lixo_by_content(fp: Path) -> bool:
         return False
     return real_char_count(read_content(fp)) < MIN_CONTENT_CHARS
 
-def move_to_lixo(fp: Path, vault_root: Path, reason: str):
+def move_to_lixo(fp: Path, vault_root: Path, reason: str, dry_run: bool = False):
     lixo = vault_root / LIXO_DIR
     lixo.mkdir(parents=True, exist_ok=True)
     dest = lixo / fp.name
     if dest.exists():
         dest = lixo / (fp.stem + f"_{fp.parent.name}" + fp.suffix)
     log(f"  LIXO ({reason})  {fp.relative_to(vault_root)}")
-    if not ARGS.dry_run:
+    if not dry_run:
         fp.rename(dest)
 
 # ── Domínios (somente MOC) ────────────────────────────────────────────────────
@@ -292,7 +273,7 @@ def add_links_section(content: str, links: list) -> str:
         section += f"- [[{l}]]\n"
     return content + section
 
-def strip_links_sections(vault_root: Path) -> int:
+def strip_links_sections(vault_root: Path, dry_run: bool = False) -> int:
     """Remove seções ## Links relacionados de todo o vault (reset de linking)."""
     cleaned = 0
     for md in vault_root.rglob("*.md"):
@@ -303,7 +284,7 @@ def strip_links_sections(vault_root: Path) -> int:
             original = md.read_text(encoding="utf-8", errors="ignore")
             updated  = _LINKS_SECTION_RE.sub("", original).rstrip() + "\n"
             if updated != original:
-                if not ARGS.dry_run:
+                if not dry_run:
                     md.write_text(updated, encoding="utf-8")
                 cleaned += 1
         except Exception:
@@ -313,13 +294,14 @@ def strip_links_sections(vault_root: Path) -> int:
 # ── MOC por domínio ───────────────────────────────────────────────────────────
 
 def generate_moc(vault_root: Path, all_notes: dict,
-                 only_domains: set[str] | None = None) -> int:
+                 only_domains: set[str] | None = None,
+                 dry_run: bool = False) -> int:
     """
     Gera/atualiza _index/<domínio>.md para cada domínio.
     Domínios não geram links inline — só índices temáticos.
     """
     moc_dir = vault_root / MOC_DIR
-    if not ARGS.dry_run:
+    if not dry_run:
         moc_dir.mkdir(exist_ok=True)
 
     domain_map: dict[str, list[str]] = defaultdict(list)
@@ -349,7 +331,7 @@ def generate_moc(vault_root: Path, all_notes: dict,
 
         new_content = "".join(lines)
 
-        if not ARGS.dry_run:
+        if not dry_run:
             existing = moc_path.read_text(encoding="utf-8") if moc_path.exists() else ""
             if new_content != existing:
                 moc_path.write_text(new_content, encoding="utf-8")
@@ -361,15 +343,15 @@ def generate_moc(vault_root: Path, all_notes: dict,
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main() -> bool:
-    ensure_dirs()
-    label = " [DRY RUN]" if ARGS.dry_run else ""
+def main(dry_run: bool = False, full: bool = False) -> bool:
+    ensure_state_dir(STATE_DIR)
+    label = " [DRY RUN]" if dry_run else ""
     log(f"=== organize iniciado{label} ===")
 
     vault_root = Path(VAULT_PATH)
 
     dirty_paths: list = []
-    if not ARGS.full:
+    if not full:
         dirty_data  = load_json(DIRTY_FILE)
         dirty_paths = dirty_data.get("paths", [])
         if not dirty_paths:
@@ -381,9 +363,9 @@ def main() -> bool:
         log("Modo --full: processando vault inteiro")
 
     # ── [ 0 ] Limpar seções de links antigas ──────────────────────────────────
-    if ARGS.full:
+    if full:
         log("[ 0 ] Removendo seções ## Links relacionados antigas...")
-        n_cleaned = strip_links_sections(vault_root)
+        n_cleaned = strip_links_sections(vault_root, dry_run=dry_run)
         log(f"  → {n_cleaned} arquivo(s) limpo(s)")
 
     # ── [ 1 ] Lixo ────────────────────────────────────────────────────────────
@@ -403,10 +385,10 @@ def main() -> bool:
         except ValueError:
             continue
         if is_lixo_by_name(fp.name):
-            move_to_lixo(fp, vault_root, "nome")
+            move_to_lixo(fp, vault_root, "nome", dry_run=dry_run)
             lixo_count += 1
         elif is_lixo_by_content(fp):
-            move_to_lixo(fp, vault_root, "conteúdo vazio")
+            move_to_lixo(fp, vault_root, "conteúdo vazio", dry_run=dry_run)
             lixo_count += 1
     log(f"  → {lixo_count} movida(s) para _lixo/")
 
@@ -414,7 +396,7 @@ def main() -> bool:
     log("[ 2 ] Indexando vault...")
     all_notes = collect_all_notes(
         vault_root,
-        dirty_paths if not ARGS.full else None,
+        dirty_paths if not full else None,
     )
     n_com_dominio = sum(1 for n in all_notes.values() if n["domains"])
     n_com_tags    = sum(1 for n in all_notes.values() if n["tags"])
@@ -430,7 +412,7 @@ def main() -> bool:
 
     process_list = (
         [n for n in all_notes.values() if n["dirty"]]
-        if (dirty_paths and not ARGS.full)
+        if (dirty_paths and not full)
         else list(all_notes.values())
     )
 
@@ -467,7 +449,7 @@ def main() -> bool:
                         n_sem_sinal += 1
                 continue
 
-            if not ARGS.dry_run:
+            if not dry_run:
                 fp.write_text(updated, encoding="utf-8")
 
             if links:
@@ -484,12 +466,12 @@ def main() -> bool:
     # ── [ 4 ] MOC por domínio ─────────────────────────────────────────────────
     log("[ 4 ] Gerando MOC por domínio...")
     affected_domains = None
-    if dirty_paths and not ARGS.full:
+    if dirty_paths and not full:
         affected_domains = set()
         for n in all_notes.values():
             if n["dirty"]:
                 affected_domains |= n["domains"]
-    moc_count = generate_moc(vault_root, all_notes, affected_domains)
+    moc_count = generate_moc(vault_root, all_notes, affected_domains, dry_run=dry_run)
 
     log(
         f"  → {linked} linkadas | {n_limpas} limpas (sem seção) | "
@@ -501,7 +483,7 @@ def main() -> bool:
         f"{n_ja_linkada} já linkadas"
     )
 
-    if not ARGS.dry_run:
+    if not dry_run:
         save_json(DIRTY_FILE, {
             "generated_at": datetime.now().isoformat(),
             "paths": [],
@@ -522,8 +504,6 @@ def main() -> bool:
     return True
 
 
-ARGS = None
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Organiza vault Obsidian")
     parser.add_argument("--dry-run",  action="store_true")
@@ -531,5 +511,6 @@ if __name__ == "__main__":
                         help="Processa vault inteiro")
     parser.add_argument("--verbose",  action="store_true")
     ARGS = parser.parse_args()
-    ok   = main()
+    _LOGGER = ScriptLogger(LOG_FILE, verbose=ARGS.verbose)
+    ok = main(dry_run=ARGS.dry_run, full=ARGS.full)
     sys.exit(0 if ok else 1)

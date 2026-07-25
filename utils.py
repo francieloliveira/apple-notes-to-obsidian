@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import re
+import sys
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,7 +26,8 @@ def load_json(path: str | Path) -> dict:
     try:
         with open(p, encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        print(f"AVISO: {p} corrompido/ilegível ({e}) — tratando como vazio", file=sys.stderr)
         return {}
 
 
@@ -71,6 +74,47 @@ def ensure_state_dir(state_dir: str | Path) -> Path:
     path = Path(state_dir)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+class ScriptLogger:
+    """
+    Log em arquivo + barra de progresso inline no terminal.
+    Compartilhado entre notes_to_obsidian.py e organize_vault.py (antes
+    duplicado em cada script).
+    """
+
+    def __init__(self, log_file: str | Path, verbose: bool = False):
+        self.log_file = str(log_file)
+        self.verbose = verbose
+        self._progress_active = False
+
+    def log(self, msg: str, verbose_only: bool = False) -> None:
+        if verbose_only and not self.verbose:
+            return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{ts}] {msg}"
+        # Limpa linha do progress bar antes de imprimir log
+        print(f"\r{' ' * 80}\r{line}", flush=True)
+        with open(self.log_file, "a") as f:
+            f.write(line + "\n")
+
+    def progress(self, current: int, total: int, label: str = "") -> None:
+        """Barra de progresso inline — fica na mesma linha, nunca vai para o arquivo de log."""
+        pct = current / total if total else 0
+        filled = int(pct * 25)
+        bar = "█" * filled + "░" * (25 - filled)
+        label_trunc = label[:35].ljust(35)
+        line = f"  [{bar}] {current:>4}/{total} {label_trunc}"
+        print(f"\r{' ' * 80}\r{line}", end="", flush=True)
+        self._progress_active = True
+        if current >= total:
+            print()
+            self._progress_active = False
+
+    def clear_progress(self) -> None:
+        if self._progress_active:
+            print(f"\r{' ' * 80}\r", end="", flush=True)
+            self._progress_active = False
 
 
 def note_id_slug(note_id: str) -> str:

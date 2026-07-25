@@ -18,12 +18,12 @@ from utils import (
 
 class TestTitlePolicy(unittest.TestCase):
     def test_no_hash_in_filename(self):
-        name = sanitize_title_for_filename("Reunião empresa-exemplo")
+        name = sanitize_title_for_filename("Reunião Empresa Exemplo")
         self.assertNotRegex(name, r"_[0-9a-f]{8}$")
-        self.assertEqual(name, "Reunião empresa-exemplo")
+        self.assertEqual(name, "Reunião Empresa Exemplo")
 
     def test_url_becomes_readable_slug(self):
-        url = "https://premium-dsv-outsystems.empresa-exemplo.com.br/S10865_Autonomia"
+        url = "https://premium-dsv-outsystems.exemplo.com.br/S10865_Autonomia"
         slug = url_to_filename_slug(url)
         self.assertTrue(slug.startswith("premium-dsv-outsystems"))
         self.assertNotIn("://", slug)

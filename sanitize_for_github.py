@@ -15,9 +15,9 @@ Uso: python sanitize_for_github.py --dry-run   (apenas mostra o que será feito)
 """
 
 import argparse
+import json
 import os
 import re
-import shutil
 from pathlib import Path
 
 # ─── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
@@ -30,15 +30,24 @@ PATH_REPLACEMENTS = [
     ("/usr/local/bin", "${SCRIPTS_DIR}"),
 ]
 
-# Keywords que podem ser nomes de clientes (domínios sensíveis)
-CLIENT_KEYWORDS = {
-    "empresa-exemplo": "cliente_energia",
-    "parceiro-exemplo": "cliente_documento",
-    "cliente-exemplo-a": "cliente_industria",
-    "parceiro-tech-exemplo": "parceiro_tech",
-    "cliente-exemplo-b": "cliente_energia",
-    "cliente-exemplo-c": "cliente_energia",
-}
+
+def _load_client_keywords() -> dict:
+    """
+    Keywords que podem ser nomes reais de clientes (domínios sensíveis).
+    NUNCA hardcode nomes reais aqui — este arquivo é público.
+    Preencha localmente em client_keywords.local.json (listado no .gitignore):
+        {"nome-real-do-cliente": "categoria-generica", ...}
+    """
+    local_path = PROJECT_ROOT / "client_keywords.local.json"
+    if local_path.exists():
+        try:
+            return json.loads(local_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+CLIENT_KEYWORDS = _load_client_keywords()
 
 # Arquivos para modificar
 FILES_TO_SANITIZE = [
@@ -230,55 +239,24 @@ config.py
 
 
 def create_config_example(dry_run: bool = False) -> bool:
-    """Cria template de configuração genérico."""
-    content = '''#!/usr/bin/env python3
-"""
-config.example.py
-Template de configuração para o VaultAI.
-
-Copie para config.py e ajuste os valores:
-    cp config.example.py config.py
-"""
-
-import os
-
-# ─── Paths ───────────────────────────────────────────────────────────────────
-# Caminho para o vault Obsidian
-VAULT_PATH = os.getenv("VAULT_PATH", os.path.expanduser("~/VaultAI"))
-
-# Diretório onde os scripts serão instalados
-SCRIPTS_DIR = os.getenv("SCRIPTS_DIR", "/usr/local/bin")
-
-# ─── Timezone ────────────────────────────────────────────────────────────────
-TIMEZONE = "America/Sao_Paulo"
-
-# ─── Pastas que devem ser "achatadas" (sem subpastas no vault)
-FLAT_FOLDERS = {"notes", "notas", "todas (icloud)", "all icloud", "icloud"}
-
-# ─── Domínios para organização automática ────────────────────────────────────
-# Edite conforme necessário para seu caso de uso
-DOMAIN_KEYWORDS = {
-    "tech": ["python", "java", "javascript", "docker", "kubernetes"],
-    "cloud": ["aws", "azure", "gcp", "lambda", "s3"],
-    "ai": ["llm", "machine learning", "transformer", "embedding"],
-    "devops": ["ci/cd", "pipeline", "deploy", "terraform"],
-    # Adicione seus próprios domínios aqui
-}
-'''
-    
+    """
+    Verifica o template de configuração.
+    config.example.py é mantido diretamente no repositório (fonte única da
+    verdade); este script não gera mais uma cópia própria para evitar que as
+    duas versões fiquem dessincronizadas.
+    """
     config_path = PROJECT_ROOT / "config.example.py"
-    
+
     if dry_run:
-        print(f"  [CREATE] config.example.py ({len(content)} bytes)")
+        print(f"  [CHECK] config.example.py {'existe' if config_path.exists() else 'AUSENTE'}")
+        return config_path.exists()
+
+    if config_path.exists():
+        print(f"→ config.example.py já existe (template canônico do repositório)")
         return True
-    
-    if not config_path.exists():
-        config_path.write_text(content, encoding="utf-8")
-        print(f"✓ config.example.py criado")
-        return True
-    else:
-        print(f"→ config.example.py já existe (não sobrescrito)")
-        return False
+
+    print(f"✗ config.example.py não encontrado — crie manualmente (ver README_SETUP.md)")
+    return False
 
 
 def create_readme_section(dry_run: bool = False) -> bool:
