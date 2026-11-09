@@ -10,6 +10,8 @@ Linking conservador alinhado a práticas PKM/Obsidian:
   - Notas lixo excluídas do grafo de links
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import re
@@ -18,15 +20,20 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-import sys as _sys
-import os as _os
-_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-from config import (
-    VAULT_PATH, DIRTY_FILE, ORGANIZE_LOG as LOG_FILE,
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_import import require as _require_config
+(
+    VAULT_PATH, DIRTY_FILE, LOG_FILE,
     ORGANIZE_METRICS_FILE,
     LIXO_DIR, MIN_CONTENT_CHARS,
     LIXO_NAME_PATTERNS, DOMAIN_KEYWORDS,
-    MAX_INLINE_LINKS, MIN_TITLE_CHARS,
+    MAX_INLINE_LINKS, MIN_TITLE_CHARS, STATE_DIR,
+) = _require_config(
+    "VAULT_PATH", "DIRTY_FILE", "ORGANIZE_LOG",
+    "ORGANIZE_METRICS_FILE",
+    "LIXO_DIR", "MIN_CONTENT_CHARS",
+    "LIXO_NAME_PATTERNS", "DOMAIN_KEYWORDS",
+    "MAX_INLINE_LINKS", "MIN_TITLE_CHARS", "STATE_DIR",
 )
 from utils import load_json, save_json, extract_note_id
 
@@ -51,7 +58,7 @@ _LINKS_SECTION_RE = re.compile(
 # ── Logging / progresso ───────────────────────────────────────────────────────
 
 def ensure_dirs():
-    Path(os.path.expanduser("~/.vault")).mkdir(parents=True, exist_ok=True)
+    Path(STATE_DIR).mkdir(parents=True, exist_ok=True)
 
 def log(msg: str, verbose_only: bool = False):
     if verbose_only and not ARGS.verbose:

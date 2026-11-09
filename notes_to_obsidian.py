@@ -20,19 +20,24 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 # Importa configuração centralizada; permite override via variáveis de ambiente
-import sys as _sys
-import os as _os
-_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-from config import (
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_import import require as _require_config
+(
     VAULT_PATH, SYNC_ROOT, STATE_FILE, IDS_FILE, DIRTY_FILE,
-    CHECKPOINT_FILE, METRICS_FILE, PATHS_FILE, SYNC_LOG as LOG_FILE,
+    CHECKPOINT_FILE, METRICS_FILE, PATHS_FILE, LOG_FILE,
     TIMEZONE, FLAT_FOLDERS, FETCH_WORKERS, CHECKPOINT_EVERY,
-    PROGRESS_FILE,
+    PROGRESS_FILE, STATE_DIR,
+) = _require_config(
+    "VAULT_PATH", "SYNC_ROOT", "STATE_FILE", "IDS_FILE", "DIRTY_FILE",
+    "CHECKPOINT_FILE", "METRICS_FILE", "PATHS_FILE", "SYNC_LOG",
+    "TIMEZONE", "FLAT_FOLDERS", "FETCH_WORKERS", "CHECKPOINT_EVERY",
+    "PROGRESS_FILE", "STATE_DIR",
 )
 from utils import (
     load_json, save_json, empty_sync_metrics,
     resolve_human_note_path, sanitize_title_for_filename,
     format_aliases_yaml, fix_obsidian_embeds, repair_vault_image_embeds,
+    is_secret_note, remove_secret_from_vault,
 )
 
 # ─── CONSTANTES INTERNAS ──────────────────────────────────────────────────────
@@ -111,7 +116,7 @@ end tell
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def ensure_dirs():
-    Path(os.path.expanduser("~/.vault")).mkdir(parents=True, exist_ok=True)
+    Path(STATE_DIR).mkdir(parents=True, exist_ok=True)
 
 def log(msg: str, verbose_only=False):
     if verbose_only and not ARGS.verbose:
@@ -243,22 +248,25 @@ def normalize_date(d: str) -> str:
 
 def load_checkpoint() -> dict:
     """
-    Retorna o checkpoint salvo ou {} se não existir / inválido.
-    Formato: { "pending_ids": [...], "state": {...}, "ids": {...},
-               "dirty_paths": [...], "created": N, "updated": N }
+    Retorna o checkpoint salvo ou {} se não existir.
+    Formato: { "pending_ids": [...], "done_ids": [...], "state": {...},
+               "ids": {...}, "dirty_paths": [...], "created": N, "updated": N }
+    pending_ids é a lista da sessão. done_ids é o que já foi gravado.
+    sync() descarta o arquivo se o formato for antigo ou o pendente mudou.
     """
-    data = load_json(CHECKPOINT_FILE)
-    # Valida que o checkpoint é da sessão atual (mesmo conjunto de pending)
-    if not data or "pending_ids" not in data:
-        return {}
-    return data
+    return load_json(CHECKPOINT_FILE) or {}
 
-def save_checkpoint(pending_ids: list, state: dict, ids: dict, paths: dict,
-                    dirty_paths: list, created: int, updated: int):
-    """Salva checkpoint de forma atômica."""
+def save_checkpoint(pending_ids: list, done_ids: list, state: dict, ids: dict,
+                    paths: dict, dirty_paths: list, created: int, updated: int):
+    """Salva checkpoint de forma atômica.
+
+    pending_ids é a lista da sessão, não o que ainda falta.
+    done_ids é o que já entrou no state nesta sessão.
+    """
     save_json(CHECKPOINT_FILE, {
         "saved_at":    datetime.now().isoformat(),
-        "pending_ids": pending_ids,
+        "pending_ids": list(pending_ids),
+        "done_ids":    list(done_ids),
         "state":       state,
         "ids":         ids,
         "paths":       paths,
@@ -443,7 +451,7 @@ end tell
 def fetch_one(note_id: str, timeout: int = 30) -> tuple:
     """
     Busca corpo, tags e data de modificação de uma nota por ID.
-    Retorna (note_id, body_html, mod_date, tags_list) ou ("", "", [], "") em caso de erro.
+    Retorna (note_id, body_html, mod_date, tags_list) ou (note_id, "", "", []) em caso de erro.
     """
     script = AS_FETCH_ONE.replace("{note_id}", note_id)
     try:
@@ -474,8 +482,6 @@ def fetch_needed(pending: list, folder_tree: dict) -> dict:
     Retorna { note_id: (body_html, mod_date_from_fetch, tags) }
     A mod_date vem do mesmo AppleScript que o corpo — mesma fonte, sem divergência.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     total  = len(pending)
     bodies = {}
     failed = 0
@@ -608,6 +614,21 @@ def notes_db_changed() -> bool:
         return True   # em caso de dúvida, executa o sync normalmente
 
 
+def recorded_sync_metrics(*, criadas=0, atualizadas=0, protegidas=0,
+                          bloqueadas=0, erros=0) -> dict:
+    """Sync de verdade: schema de empty_sync_metrics(), com skipped falso."""
+    metrics = empty_sync_metrics()
+    metrics.update({
+        "criadas": criadas,
+        "atualizadas": atualizadas,
+        "protegidas": protegidas,
+        "bloqueadas": bloqueadas,
+        "erros": erros,
+        "skipped": False,
+    })
+    return metrics
+
+
 # ── Sync principal ────────────────────────────────────────────────────────────
 
 def sync():
@@ -657,27 +678,37 @@ def sync():
         if not pending:
             log("     Tudo atualizado. Nada a fazer.")
             save_json(DIRTY_FILE, {"generated_at": datetime.now().isoformat(), "paths": []})
+            # Sem isto o pipeline lê o metrics.json da execução anterior e avisa "N novas".
+            save_json(METRICS_FILE, empty_sync_metrics())
             clear_checkpoint()
             log("=== sync concluido ===")
             return True
 
         # ── Verifica checkpoint de sessão anterior ─────────────────────────────
+        # pending_ids é a lista da sessão. Retoma só se ela ainda for igual
+        # ao pendente atual. Ids que sumiram ou apareceram invalidam.
+        # done_ids é o que já foi gravado — não o state inteiro, senão uma
+        # nota antiga com data nova seria pulada.
         ckpt = {} if ARGS.full else load_checkpoint()
         pending_ids_now = [n[0] for n in pending]
+        session_pending_ids = list(pending_ids_now)
+        done_ids = []
 
-        if ckpt and set(ckpt.get("pending_ids", [])) == set(pending_ids_now):
+        if (
+            ckpt
+            and "done_ids" in ckpt
+            and set(ckpt.get("pending_ids", [])) == set(pending_ids_now)
+        ):
             state       = ckpt["state"]
             ids         = ckpt["ids"]
             paths       = ckpt.get("paths", paths)
             dirty_paths = ckpt["dirty_paths"]
             created     = ckpt["created"]
             updated     = ckpt["updated"]
+            done_ids    = list(ckpt["done_ids"])
+            done_set    = set(done_ids)
 
-            done_ids = {
-                k for k in state.keys()
-                if k != "_last_sync_epoch"
-            }
-            pending  = [n for n in pending if n[0] not in done_ids]
+            pending  = [n for n in pending if n[0] not in done_set]
 
             resumed = len(pending_ids_now) - len(pending)
             if resumed:
@@ -701,20 +732,44 @@ def sync():
                     "generated_at": datetime.now().isoformat(),
                     "paths": dirty_paths,
                 })
-                save_json(METRICS_FILE, {
-                    "generated_at": datetime.now().isoformat(),
-                    "criadas": created, "atualizadas": updated,
-                    "protegidas": 0, "erros": 0,
-                })
+                save_json(METRICS_FILE, recorded_sync_metrics(
+                    criadas=created, atualizadas=updated,
+                ))
             clear_checkpoint()
             log("=== sync concluido ===")
             return True
+
+        # Título/pasta antes do fetch. Senha não vai para o vault.
+        blocked = 0
+        to_fetch = []
+        vault_root = Path(VAULT_PATH)
+        for (note_id, title, folder_id, mod_date) in pending:
+            segments = tree.get(folder_id) or []
+            is_sec, reason = is_secret_note(title, "", segments)
+            if is_sec:
+                blocked += 1
+                if not ARGS.dry_run:
+                    removed = remove_secret_from_vault(note_id, paths, vault_root)
+                    if removed is not False:
+                        state[note_id] = normalize_date(mod_date)
+                        ids[note_id] = note_id  # identidade: checkpoint e notes_ids.json guardam note_id→note_id
+                        if note_id not in done_ids:
+                            done_ids.append(note_id)
+                        if removed:
+                            log(f"  xx  SECRET removido do vault: {removed}",
+                                verbose_only=True)
+                log(f"  --  BLOQUEADA (secret) '{title[:50]}' [{reason}]")
+            else:
+                to_fetch.append((note_id, title, folder_id, mod_date))
+        if blocked:
+            log(f"     Secrets bloqueados (título/pasta): {blocked}")
+        pending = to_fetch
 
         # Etapa 3: busca corpos em lotes com retry
         if ARGS.dry_run:
             bodies = {}
         else:
-            bodies = fetch_needed(pending, tree)
+            bodies = fetch_needed(pending, tree) if pending else {}
             clear_progress()
             log(f"     Conteúdo obtido: {len(bodies)}/{len(pending)} notas")
 
@@ -723,7 +778,7 @@ def sync():
         total_w   = len(pending)
 
         for i, (note_id, title, folder_id, mod_date) in enumerate(pending, 1):
-            state_key = note_id   # chave estável = note_id
+            state_key = note_id   # já é note_id; ids[] repete o id no checkpoint e em notes_ids.json
             try:
                 segments = tree.get(folder_id)
                 if not segments:
@@ -740,6 +795,27 @@ def sync():
                 # no próximo ciclo, eliminando divergências de fuso/formato
                 mod_date_to_save  = fetched[1] if fetched[1] else mod_date
                 tags              = fetched[2] if len(fetched) > 2 else []
+
+                # Corpo: key/senha com título inocente, ainda antes de gravar.
+                is_sec, reason = is_secret_note(title, body_html or "", segments)
+                if is_sec:
+                    blocked += 1
+                    if not ARGS.dry_run:
+                        removed = remove_secret_from_vault(note_id, paths, vault_root)
+                        if removed is not False:
+                            state[state_key] = normalize_date(mod_date_to_save)
+                            ids[state_key] = note_id
+                            if note_id not in done_ids:
+                                done_ids.append(note_id)
+                            if removed:
+                                log(f"  xx  SECRET removido do vault: {removed}",
+                                    verbose_only=True)
+                    clear_progress()
+                    log(f"  --  BLOQUEADA (secret) '{title[:50]}' [{reason}]")
+                    progress(i, total_w, f"block  {title[:35]}")
+                    save_progress(i, total_w, created, updated, errors)
+                    continue
+
                 fp                = write_note(title, segments, body_html,
                                                mod_date_to_save, note_id,
                                                paths, tags)
@@ -748,6 +824,8 @@ def sync():
                     state[state_key] = normalize_date(mod_date_to_save)  # normalizado para comparação estável
                     ids[state_key]   = note_id
                     dirty_paths.append(str(fp))
+                    if note_id not in done_ids:
+                        done_ids.append(note_id)
 
                 if is_new:
                     created += 1
@@ -757,9 +835,9 @@ def sync():
                 save_progress(i, total_w, created, updated, errors)
 
                 # ── Checkpoint periódico ───────────────────────────────────────
+                # pending_ids permanece a lista da sessão. done_ids é o gravado.
                 if not ARGS.dry_run and i % CHECKPOINT_EVERY == 0:
-                    remaining_ids = [n[0] for n in pending[i:]]
-                    save_checkpoint(remaining_ids, state, ids, paths,
+                    save_checkpoint(session_pending_ids, done_ids, state, ids, paths,
                                     dirty_paths, created, updated)
                     log(f"  .. checkpoint: {i}/{total_w} notas gravadas",
                         verbose_only=True)
@@ -790,13 +868,13 @@ def sync():
                 "paths": dirty_paths
             })
             # Grava métricas estruturadas — lidas pelo pipeline sem parsing de log
-            save_json(METRICS_FILE, {
-                "generated_at": datetime.now().isoformat(),
-                "criadas":     created,
-                "atualizadas": updated,
-                "protegidas":  protected,
-                "erros":       errors,
-            })
+            save_json(METRICS_FILE, recorded_sync_metrics(
+                criadas=created,
+                atualizadas=updated,
+                protegidas=protected,
+                bloqueadas=blocked,
+                erros=errors,
+            ))
             # Remove checkpoint só se tudo correu bem
             if errors == 0:
                 clear_checkpoint()
@@ -804,7 +882,7 @@ def sync():
                 log(f"  .. checkpoint mantido ({errors} erros) — próximo sync retoma")
 
         log(f"     criadas:{created}  atualizadas:{updated}  "
-            f"protegidas:{protected}  erros:{errors}")
+            f"protegidas:{protected}  bloqueadas:{blocked}  erros:{errors}")
         log("=== sync concluido ===")
         log("=" * 50)
         return errors == 0

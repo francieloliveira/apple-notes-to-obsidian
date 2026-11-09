@@ -51,9 +51,15 @@ logs/
 notes_ids.json
 metrics.json
 
-# Arquivos de configuração com dados pessoais
+# Arquivos de configuração com dados pessoais.
+# Ignorar só config.py não cobre o backup: config.py.bak e qualquer *.bak ficam de fora.
 config.py
+config.py.bak
+*.bak
 *.local.py
+
+# O app instalável é o que install.sh gera em ~/Applications. Não versionar bundle no repo.
+*.app/
 
 # Arquivos compactados (podem conter dados sensíveis)
 *.zip

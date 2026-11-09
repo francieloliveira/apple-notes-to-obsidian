@@ -6,6 +6,8 @@ Requer: pip install rumps
 Ícone fixo de cubo/BD na menu bar; estado detalhado no menu dropdown.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -19,18 +21,33 @@ import sys
 import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import (
-    STATUS_FILE, SCRIPTS_DIR, PIPELINE_LOG as LOG_FILE,
+from config_import import require as _require_config
+(
+    STATUS_FILE, SCRIPTS_DIR, LOG_FILE,
     SYNC_LOG, POLL_SECS, VAULT_PATH, PYTHON_BIN,
     AGENT_PLIST, MENUBAR_PLIST, PIPELINE_INTERVAL_SECS,
     PIPELINE_LABEL, MENUBAR_LABEL, LEGACY_MENUBAR_LABEL,
     PROGRESS_FILE, SYNC_PAUSED_FILE, LOGIN_DISABLED_FILE, LAUNCHER_PATH,
     MENUBAR_ICON_PATH,
+) = _require_config(
+    "STATUS_FILE", "SCRIPTS_DIR", "PIPELINE_LOG",
+    "SYNC_LOG", "POLL_SECS", "VAULT_PATH", "PYTHON_BIN",
+    "AGENT_PLIST", "MENUBAR_PLIST", "PIPELINE_INTERVAL_SECS",
+    "PIPELINE_LABEL", "MENUBAR_LABEL", "LEGACY_MENUBAR_LABEL",
+    "PROGRESS_FILE", "SYNC_PAUSED_FILE", "LOGIN_DISABLED_FILE", "LAUNCHER_PATH",
+    "MENUBAR_ICON_PATH",
 )
 
 MENUBAR_SCRIPT = os.path.join(SCRIPTS_DIR, "vault_menubar.py")
 
 PIPELINE = os.path.join(SCRIPTS_DIR, "pipeline.py")
+
+
+def _agent_python() -> str:
+    """Interpreter do agente. config.PYTHON_BIN pode apontar para o .venv dataless."""
+    from vaultai_dashboard import agent_python
+
+    return agent_python(SCRIPTS_DIR)
 
 STATUS_ICON = {
     "idle":    "○",
@@ -63,68 +80,18 @@ def _sync_toggle_title(on: bool) -> str:
 
 
 def ensure_launcher() -> str:
-    """Cria VaultAI.app em ~/Applications para reabrir o menu bar."""
-    python = PYTHON_BIN if os.path.isfile(PYTHON_BIN) else sys.executable
-    log_path = os.path.expanduser("~/.vault/menubar.log")
-    app_path = Path(LAUNCHER_PATH)
-    contents = app_path / "Contents"
-    macos_dir = contents / "MacOS"
-    macos_dir.mkdir(parents=True, exist_ok=True)
+    """Atalho único: abre a janela do dashboard, não um segundo app.
 
-    launcher = macos_dir / "launcher"
-    launcher.write_text(
-        f"""#!/bin/bash
-if pgrep -f "{MENUBAR_SCRIPT}" >/dev/null 2>&1; then
-    osascript -e 'display notification "VaultAI já está ativo na barra de menu." with title "VaultAI"'
-    exit 0
-fi
-nohup "{python}" "{MENUBAR_SCRIPT}" >> "{log_path}" 2>&1 &
-osascript -e 'display notification "VaultAI iniciado na barra de menu." with title "VaultAI"'
-exit 0
-""",
-        encoding="utf-8",
-    )
-    os.chmod(launcher, 0o755)
+    A menu bar roda no venv do pipeline. ensure_app sem python= herdaria
+    esse interpreter e reescreveria o bundle da janela.
+    """
+    from vaultai_dashboard import _WINDOW_PYTHON, ensure_app
 
-    (contents / "Info.plist").write_text(
-        """<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>pt-BR</string>
-    <key>CFBundleExecutable</key>
-    <string>launcher</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.vaultai.launcher</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>VaultAI</string>
-    <key>CFBundleDisplayName</key>
-    <string>VaultAI</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
-    <key>LSUIElement</key>
-    <true/>
-</dict>
-</plist>
-""",
-        encoding="utf-8",
-    )
-
+    app_path = ensure_app(python=_WINDOW_PYTHON)
     legacy = Path(os.path.expanduser("~/Applications/VaultAI.command"))
     if legacy.exists():
         legacy.unlink()
-
-    return str(app_path)
+    return app_path
 
 
 def _format_metrics(criadas: int, atualizadas: int, erros: int) -> str:
@@ -399,7 +366,7 @@ class VaultMenuBar(rumps.App):
 
         def worker():
             try:
-                python = PYTHON_BIN if os.path.isfile(PYTHON_BIN) else sys.executable
+                python = _agent_python()
                 cmd = [python, PIPELINE] + extra_args
                 self._proc = subprocess.Popen(cmd)
                 self._proc.wait()
@@ -568,9 +535,7 @@ class VaultMenuBar(rumps.App):
         return Path(path).exists()
 
     def _python_for_plist(self) -> str:
-        if os.path.isfile(PYTHON_BIN):
-            return PYTHON_BIN
-        return sys.executable
+        return _agent_python()
 
     def _write_pipeline_plist(self):
         python  = self._python_for_plist()

@@ -19,10 +19,15 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import (
-    SCRIPTS_DIR, LOCK_FILE, PIPELINE_LOG as LOG_FILE,
+from config_import import require as _require_config
+(
+    SCRIPTS_DIR, LOCK_FILE, LOG_FILE,
     STATUS_FILE, METRICS_FILE, ORGANIZE_METRICS_FILE, STEP_TIMEOUT,
     STATE_DIR, LOG_MAX_BYTES, LOG_BACKUPS,
+) = _require_config(
+    "SCRIPTS_DIR", "LOCK_FILE", "PIPELINE_LOG",
+    "STATUS_FILE", "METRICS_FILE", "ORGANIZE_METRICS_FILE", "STEP_TIMEOUT",
+    "STATE_DIR", "LOG_MAX_BYTES", "LOG_BACKUPS",
 )
 from utils import ensure_state_dir, rotate_logs_in_dir
 
@@ -171,6 +176,7 @@ def main():
         org_metrics = _read_organize_metrics()
         criadas     = metrics.get("criadas", 0)
         atualizadas = metrics.get("atualizadas", 0)
+        bloqueadas  = metrics.get("bloqueadas", 0)
         erros       = metrics.get("erros", 0)
         skipped     = metrics.get("skipped", False)
 
@@ -189,6 +195,7 @@ def main():
         parts = []
         if criadas:     parts.append(f"{criadas} nova{'s' if criadas != 1 else ''}")
         if atualizadas: parts.append(f"{atualizadas} atualizada{'s' if atualizadas != 1 else ''}")
+        if bloqueadas:  parts.append(f"{bloqueadas} secret(s) bloqueado(s)")
         if erros:       parts.append(f"{erros} erro{'s' if erros != 1 else ''}")
 
         if skipped and not parts:

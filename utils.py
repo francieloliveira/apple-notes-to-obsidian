@@ -341,6 +341,193 @@ def empty_sync_metrics() -> dict:
         "criadas": 0,
         "atualizadas": 0,
         "protegidas": 0,
+        "bloqueadas": 0,
         "erros": 0,
         "skipped": True,
     }
+
+
+# ─── Secrets blocklist (Apple Notes → vault) ─────────────────────────────
+# Senha não vai para o vault. Título, allowlist e corpo são default aqui.
+# config.py só liga/desliga (SECRETS_SKIP_ENABLED) e acrescenta pastas.
+
+_DEFAULT_SECRET_FOLDERS = {
+    "senhas", "passwords", "credentials", "credenciais", "secrets",
+}
+
+_DEFAULT_TITLE_PATTERNS = [
+    r"(?i)\bsenhas?\b",
+    r"(?i)\bpassword\b",
+    r"(?i)api[_\s-]?key",
+    r"(?i)\bapikey\b",
+    r"(?i)\bcredenciais?\b",
+    r"(?i)\btoken\b",
+    r"(?i)\bsecret\b",
+    r"(?i)ANTHROPIC_API_KEY",
+    r"(?i)OPENAI.*KEY",
+    r"(?i)export\s+\w*API_KEY",
+    r"(?i)github\s+token",
+    r"(?i)aws\s+credenc",
+]
+
+_DEFAULT_TITLE_ALLOWLIST = [
+    r"(?i)passwordless",
+    r"(?i)mudar\s+senha\s+usu[aá]rio",
+    r"(?i)authenticateUser",
+    r"(?i)after\s+booting\s+fails",  # recovery Linux sem senha real
+]
+
+_DEFAULT_BODY_PATTERNS = [
+    r"sk-[A-Za-z0-9]{10,}",
+    r"AKIA[0-9A-Z]{16}",
+    r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----",
+    r"(?i)aws_secret_access_key\s*=\s*\S+",
+    r"(?i)export\s+\w*API_KEY\s*=\s*['\"]?[A-Za-z0-9_\-]{8,}",
+    r"(?i)(?:password|senha)\s*[:=]\s*[^\s\"']{4,}",
+]
+
+
+def _compile_patterns(patterns: list[str]) -> list[re.Pattern]:
+    compiled = []
+    for p in patterns:
+        try:
+            compiled.append(re.compile(p))
+        except re.error:
+            continue
+    return compiled
+
+
+def _config_secrets_switch() -> tuple[bool, set[str]]:
+    """config liga/desliga e acrescenta pastas. Padrões não vêm daqui."""
+    enabled = True
+    extra: set[str] = set()
+    try:
+        import config as cfg
+    except ImportError:
+        return enabled, extra
+    enabled = bool(getattr(cfg, "SECRETS_SKIP_ENABLED", True))
+    raw = getattr(cfg, "SECRETS_FOLDER_NAMES", ()) or ()
+    return enabled, {str(n) for n in raw}
+
+
+def is_secret_note(
+    title: str,
+    body: str = "",
+    folder_segments: list[str] | None = None,
+    *,
+    enabled: bool | None = None,
+    folder_names: set[str] | None = None,
+    title_patterns: list[str] | None = None,
+    title_allowlist: list[str] | None = None,
+    body_patterns: list[str] | None = None,
+) -> tuple[bool, str]:
+    """
+    Decide se a nota NÃO deve ir para o vault.
+
+    Retorna (True, motivo) se for secret; (False, "") caso contrário.
+    Padrões de título, allowlist e corpo são default deste módulo.
+    config só pode desligar a checagem ou acrescentar pastas.
+    """
+    cfg_enabled, cfg_folders = (None, set())
+    if enabled is None or folder_names is None:
+        cfg_enabled, cfg_folders = _config_secrets_switch()
+    if enabled is None:
+        enabled = cfg_enabled
+    if not enabled:
+        return False, ""
+
+    if folder_names is None:
+        blocked_folders = {n.lower() for n in _DEFAULT_SECRET_FOLDERS} | {
+            n.lower() for n in cfg_folders
+        }
+    else:
+        blocked_folders = {n.lower() for n in folder_names}
+
+    for seg in folder_segments or []:
+        if seg and seg.strip().lower() in blocked_folders:
+            return True, f"pasta bloqueada: {seg}"
+
+    title = title or ""
+    allow_src = _DEFAULT_TITLE_ALLOWLIST if title_allowlist is None else title_allowlist
+    allow = any(re.search(p, title) for p in allow_src)
+
+    if not allow:
+        patterns = _DEFAULT_TITLE_PATTERNS if title_patterns is None else title_patterns
+        for p in _compile_patterns(patterns):
+            if p.search(title):
+                return True, "título"
+
+    body = body or ""
+    if body:
+        plain = re.sub(r"<[^>]+>", " ", body)
+        patterns = _DEFAULT_BODY_PATTERNS if body_patterns is None else body_patterns
+        for p in _compile_patterns(patterns):
+            if p.search(plain) or p.search(body):
+                return True, "conteúdo"
+
+    return False, ""
+
+
+_SECRET_ATTACH_RE = re.compile(
+    r"!\[\[(?:_attachments/)?([^\]\r\n|#/\\]+)(?:[#|][^\]]*)?\]\]"
+)
+
+
+def _unlink_referenced_attachments(note_path: Path, text: str, vault_root: Path) -> None:
+    """Unlink attachments cited by the note. OSError propagates; unsafe paths are skipped."""
+    vault = Path(vault_root).resolve()
+    att_dir = (note_path.parent / "_attachments").resolve()
+    try:
+        att_dir.relative_to(vault)
+    except ValueError:
+        return
+    seen: set[str] = set()
+    for match in _SECRET_ATTACH_RE.finditer(text):
+        name = match.group(1)
+        if not name or name in seen or name in {".", ".."}:
+            continue
+        seen.add(name)
+        target = (att_dir / name).resolve()
+        try:
+            target.relative_to(att_dir)
+        except ValueError:
+            continue
+        if target == att_dir or not target.is_file():
+            continue
+        target.unlink()
+
+
+def remove_secret_from_vault(
+    note_id: str,
+    paths_map: dict,
+    vault_root: Path,
+) -> str | None | bool:
+    """
+    Remove nota já sincronizada e só os attachments que o markdown dela cita
+    (![[_attachments/NAME]] ou ![[NAME]]), se o caminho resolvido ficar dentro
+    de _attachments e do vault.
+
+    Retorna o caminho relativo removido, None se não havia mapeamento ou o
+    arquivo já não existia, ou False se um unlink falhou (o mapa não muda).
+    """
+    rel = paths_map.get(note_id)
+    if not rel:
+        return None
+    fp = Path(vault_root) / rel
+    try:
+        if not fp.is_file():
+            paths_map.pop(note_id, None)
+            return None
+        text = fp.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    if "source: Apple Notes" not in text[:500]:
+        paths_map.pop(note_id, None)
+        return None
+    try:
+        _unlink_referenced_attachments(fp, text, vault_root)
+        fp.unlink()
+    except OSError:
+        return False
+    paths_map.pop(note_id, None)
+    return rel
