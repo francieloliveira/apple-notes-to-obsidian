@@ -7,7 +7,7 @@ Sincronização automática entre **Apple Notes** e **Obsidian** no macOS, com o
 - **Sync Apple Notes → Obsidian** — Exporta notas preservando formatação, imagens e anexos (unidirecional)
 - **Organização automática** — Classifica por domínio no MOC (`generate_moc`, `_index/`) e cria links por título citado ou tag (`find_links`)
 - **Detecção de lixo** — Move automaticamente notas vazias ou com nomes genéricos para pasta `_lixo`
-- **Janela** — Acompanhe o sync com `open ~/Applications/VaultAI.app` (`ensure_app`, `/usr/bin/python3`)
+- **Janela** — Acompanhe o sync com `open /Applications/VaultAI.app` (atalho do Finder; o bundle real continua em `~/Applications`)
 - **Menu bar** — `install.sh` carrega `com.vaultai.menubar` (`vault_menubar.py`) com o python de `pipeline_venv_dir`, não com `/usr/bin/python3` e nunca com um `.venv` dataless. O ícone é `assets/menubar_icon.png`
 - **Incremental** — Processa apenas notas novas ou modificadas desde o último sync
 - **Resiste a falhas** — Checkpointing permite retomar syncs interrompidos
@@ -50,7 +50,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-`install.sh` cria o atalho `~/Applications/VaultAI.app` (`ensure_app` em `vaultai_dashboard.py`). O executável da janela chama `/usr/bin/python3`, nunca um python debaixo de `.venv`. O venv do pipeline vem de `pipeline_venv_dir`: `.venv` no repositório só se o projeto não está no iCloud; no iCloud fica em `~/Library/Application Support/VaultAI/venv`. O script instala as dependências nesse venv (`rumps` para a menu bar), configura o LaunchAgent do pipeline (intervalo `PIPELINE_INTERVAL_SECS` do `config.py`; no example, 1800 s = 30 min), carrega `com.vaultai.menubar` com esse mesmo python em `vault_menubar.py` e rotaciona logs grandes. A janela não herda esse python.
+`install.sh` cria o atalho `~/Applications/VaultAI.app` (`ensure_app` em `vaultai_dashboard.py`) e publica o mesmo bundle em `/Applications/VaultAI.app`, que é a pasta Aplicativos do Finder. O executável da janela chama `/usr/bin/python3`, nunca um python debaixo de `.venv`. O venv do pipeline vem de `pipeline_venv_dir`: `.venv` no repositório só se o projeto não está no iCloud; no iCloud fica em `~/Library/Application Support/VaultAI/venv`. O script instala as dependências nesse venv (`rumps` para a menu bar), configura o LaunchAgent do pipeline (intervalo `PIPELINE_INTERVAL_SECS` do `config.py`; no example, 1800 s = 30 min), carrega `com.vaultai.menubar` com esse mesmo python em `vault_menubar.py` e rotaciona logs grandes. A janela não herda esse python.
 
 ### 4. Ícone da menu bar
 
@@ -59,7 +59,7 @@ chmod +x install.sh
 ### 5. Abra a janela
 
 ```bash
-open ~/Applications/VaultAI.app
+open /Applications/VaultAI.app
 ```
 
 O atalho é o de `ensure_app`: `exec /usr/bin/python3` na fonte `vaultai_dashboard.py`. `.venv/bin/python3` não abre a janela.
@@ -116,7 +116,7 @@ A tabela é o `DOMAIN_KEYWORDS` de `config.example.py`. O sync importa o `config
 Para acompanhar o sync, abra a janela ou use o ícone que `install.sh` sobe (`com.vaultai.menubar`).
 
 ```bash
-open ~/Applications/VaultAI.app
+open /Applications/VaultAI.app
 ```
 
 `ensure_app` grava o executável que chama `vaultai_dashboard.py` com `/usr/bin/python3`. Não use `.venv/bin/python3` para abrir o app.
@@ -221,7 +221,7 @@ Estes arquivos são ignorados pelo `.gitignore` — não os versionar.
 ### A janela não abre
 
 ```bash
-open ~/Applications/VaultAI.app
+open /Applications/VaultAI.app
 ./install.sh
 ```
 

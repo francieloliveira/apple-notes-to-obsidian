@@ -40,9 +40,32 @@ from vaultai_dashboard import ensure_app
 print('    App:', ensure_app(python=sys.argv[2]))
 " "${PROJECT_DIR}" "${APP_PYTHON}"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+publish_visible_app() {
+  local target="${HOME}/Applications/VaultAI.app"
+  local visible="/Applications/VaultAI.app"
+  if [[ ! -w /Applications ]]; then
+    echo "    /Applications sem escrita; app fica em ${target}"
+    return 0
+  fi
+  if [[ -e "${visible}" && ! -L "${visible}" ]]; then
+    local bid
+    bid="$(defaults read "${visible}/Contents/Info" CFBundleIdentifier 2>/dev/null || true)"
+    if [[ "${bid}" != "com.vaultai.app" ]]; then
+      echo "    ${visible} existe e não é o VaultAI; não substituo" >&2
+      return 0
+    fi
+    rm -rf "${visible}"
+  fi
+  ln -sfn "${target}" "${visible}"
+  if [[ -x "${LSREGISTER}" ]]; then
+    "${LSREGISTER}" -f "${visible}" || true
+  fi
+  echo "    Finder: ${visible}"
+}
 if [[ -x "${LSREGISTER}" ]]; then
   "${LSREGISTER}" -f "${HOME}/Applications/VaultAI.app" || true
 fi
+publish_visible_app
 
 # Prova da janela não pode reescrever o LaunchAgent. O venv do pipeline vem depois.
 if [[ "${VAULTAI_APP_ONLY:-}" == "1" ]]; then
@@ -191,7 +214,7 @@ print(f'    Rotacionados: {n} arquivo(s)' if n else '    Nenhum log precisou rot
 
 echo ""
 echo "✓ Instalação concluída"
-echo "  Janela:   ${APP_PYTHON}"
+echo "  Janela:   open /Applications/VaultAI.app"
 echo "  Menu bar: ${PYTHON} ${SCRIPTS_DIR}/vault_menubar.py"
 echo "  Pipeline: ${PYTHON}"
 echo "  Scripts:  ${SCRIPTS_DIR}/"

@@ -21,6 +21,16 @@ FG = "#f2f2f7"
 CARD = "#2c2c2e"
 MUTED = "#9aa3b2"
 WINDOW_SIZE = "420x560"
+TRACK = "#3a3a3c"
+ACCENT = "#5b8def"
+BAR_W = 348
+BAR_H = 8
+METRIC_COLORS = {
+    "criadas": "#3ddc97",
+    "atualizadas": "#5b8def",
+    "erros": "#e85d5d",
+    "bloqueadas": "#e6a23c",
+}
 
 STATE_COLORS = {
     "ok": "#3ddc97",
@@ -129,6 +139,44 @@ def format_progress_line(progress: dict | None) -> str | None:
         return None
     current = progress.get("current") or 0
     return f"progresso: {current}/{total}"
+
+
+def progress_percent(progress: dict | None) -> int | None:
+    if not progress:
+        return None
+    total = progress.get("total") or 0
+    if total <= 0:
+        return None
+    current = progress.get("current") or 0
+    pct = int(current / total * 100)
+    return max(0, min(100, pct))
+
+
+def activity_line(state: str, message: str, progress: dict | None) -> str:
+    """Frase curta do estágio atual. Porcentagem só quando há total."""
+    text = message or ""
+    lowered = text.lower()
+    if "organiz" in lowered:
+        stage = "Organizando"
+    elif "notes" in lowered or "sincron" in lowered:
+        stage = "Notas"
+    else:
+        stage = ""
+    pct = progress_percent(progress)
+    if state == "sincronizando" and pct is not None:
+        name = stage or "Sync"
+        return f"{name} · {pct}%"
+    if state == "sincronizando":
+        return stage or "Preparando o sync…"
+    if state == "pausa":
+        return "Sync automático pausado"
+    if state == "erro":
+        return text or "Sync falhou"
+    if state == "ok":
+        if pct is not None and pct < 100:
+            return f"Parcial · {pct}%"
+        return "Vault atualizado"
+    return "Aguardando o próximo sync"
 
 
 def expand_path(path: str) -> str:
@@ -474,7 +522,13 @@ class VaultWindow:
         self.font = tkfont.Font(root=self.root, font=base)
         self.font.configure(size=13)
         self.title_font = tkfont.Font(root=self.root, font=base)
-        self.title_font.configure(size=18)
+        self.title_font.configure(size=20)
+        self.caption_font = tkfont.Font(root=self.root, font=base)
+        self.caption_font.configure(size=11)
+        self.metric_font = tkfont.Font(root=self.root, font=base)
+        self.metric_font.configure(size=18)
+        self.percent_font = tkfont.Font(root=self.root, font=base)
+        self.percent_font.configure(size=15)
         self.actions = DashboardActions(
             on_pause=on_pause,
             on_resume=on_resume,
@@ -482,6 +536,9 @@ class VaultWindow:
             on_error=self.show_error,
             state_dir=self.state_dir,
         )
+        self._busy = False
+        self._animating = False
+        self._anim_id = None
         self._build()
         self.refresh()
 
@@ -501,47 +558,188 @@ class VaultWindow:
         )
         return label
 
-    def _button(self, parent, text, command):
+    def _button(self, parent, text, command, *, primary=False):
+        bg = ACCENT if primary else CARD
         return self._tk.Button(
             parent,
             text=text,
             command=command,
             font=self.font,
             fg=FG,
-            bg=CARD,
+            bg=bg,
             activeforeground=FG,
-            activebackground="#3a3a3c",
+            activebackground="#6f9cf2" if primary else "#3a3a3c",
             highlightthickness=0,
             relief="flat",
             padx=10,
-            pady=6,
+            pady=8 if primary else 6,
+            borderwidth=0,
         )
+
+    def _section(self, parent, text):
+        return self._label(parent, text, font=self.caption_font, fg=MUTED)
+
+    def _card(self, parent):
+        card = self._tk.Frame(parent, bg=CARD)
+        self._pack(card, fill="x", pady=(12, 0))
+        inner = self._tk.Frame(card, bg=CARD)
+        self._pack(inner, fill="x", padx=12, pady=12)
+        return inner
+
+    def _metric(self, parent, key, caption):
+        tile = self._tk.Frame(parent, bg=CARD)
+        self._pack(tile, side="left", expand=True, fill="x")
+        value = self._label(
+            tile,
+            "0",
+            font=self.metric_font,
+            fg=METRIC_COLORS[key],
+            bg=CARD,
+        )
+        self._pack(value, anchor="w")
+        cap = self._label(tile, caption, font=self.caption_font, fg=MUTED, bg=CARD)
+        self._pack(cap, anchor="w")
+        return value
+
+    def _paint_bar(self, percent, color):
+        self._stop_indeterminate()
+        canvas = self.bar
+        canvas.delete("all")
+        width = int(canvas["width"])
+        height = int(canvas["height"])
+        self._capsule(canvas, 0, 0, width, height, TRACK)
+        if not percent:
+            return
+        fill = max(height, int(width * (percent / 100)))
+        self._capsule(canvas, 0, 0, fill, height, color)
+
+    def _paint_indeterminate(self, phase, color):
+        canvas = self.bar
+        canvas.delete("all")
+        width = int(canvas["width"])
+        height = int(canvas["height"])
+        self._capsule(canvas, 0, 0, width, height, TRACK)
+        chunk = 72
+        x1 = phase - chunk
+        x2 = phase
+        if x2 > 0 and x1 < width:
+            self._capsule(canvas, max(0, x1), 0, min(width, x2), height, color)
+
+    def _capsule(self, canvas, x1, y1, x2, y2, fill):
+        if x2 - x1 < 2:
+            return
+        radius = max(1, (y2 - y1) // 2)
+        canvas.create_oval(x1, y1, x1 + radius * 2, y2, fill=fill, outline="")
+        canvas.create_oval(x2 - radius * 2, y1, x2, y2, fill=fill, outline="")
+        canvas.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline="")
+
+    def _kick_indeterminate(self):
+        if self._animating:
+            return
+        self._animating = True
+        self._phase = 0
+        self._tick_bar()
+
+    def _tick_bar(self):
+        if not self._animating:
+            return
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+        self._phase = (getattr(self, "_phase", 0) + 14) % (BAR_W + 80)
+        self._paint_indeterminate(self._phase, state_color("sincronizando"))
+        self._anim_id = self.root.after(40, self._tick_bar)
+
+    def _stop_indeterminate(self):
+        self._animating = False
+        anim_id = getattr(self, "_anim_id", None)
+        if anim_id is not None:
+            try:
+                self.root.after_cancel(anim_id)
+            except Exception:
+                pass
+            self._anim_id = None
+
+    def _show_starting(self):
+        color = state_color("sincronizando")
+        self.state_label.configure(text="sincronizando", fg=color)
+        self.state_dot.configure(fg=color)
+        self.percent_label.configure(text="…", fg=color)
+        self.activity_label.configure(text="Iniciando sincronização…")
+        self._kick_indeterminate()
 
     def _build(self):
         outer = self._tk.Frame(self.root, bg=BG)
-        self._pack(outer, fill="both", expand=True, padx=16, pady=16)
+        self._pack(outer, fill="both", expand=True, padx=16, pady=14)
 
+        header = self._tk.Frame(outer, bg=BG)
+        self._pack(header, fill="x")
         self._pack(
-            self._label(outer, "VaultAI", font=self.title_font),
-            anchor="w",
+            self._label(header, "VaultAI", font=self.title_font),
+            side="left",
         )
-        self.state_label = self._label(outer, "idle", fg=STATE_COLORS["idle"])
-        self._pack(self.state_label, anchor="w", pady=(8, 0))
-        self.message_label = self._label(outer, "", fg=MUTED)
-        self._pack(self.message_label, anchor="w", pady=(4, 0))
+        pill = self._tk.Frame(header, bg=CARD)
+        self._pack(pill, side="right")
+        self.state_dot = self._label(pill, "●", fg=STATE_COLORS["idle"], bg=CARD)
+        self._pack(self.state_dot, side="left", padx=(8, 0), pady=4)
+        self.state_label = self._label(pill, "idle", fg=STATE_COLORS["idle"], bg=CARD)
+        self._pack(self.state_label, side="left", padx=(4, 8), pady=4)
 
-        self.sync_label = self._label(outer, "")
-        self._pack(self.sync_label, anchor="w", pady=(16, 0))
-        self.progress_label = self._label(outer, "", fg=MUTED)
-        self._pack(self.progress_label, anchor="w", pady=(6, 0))
+        self.message_label = self._label(outer, "", fg=MUTED)
+        self.message_label.configure(wraplength=348)
+        self._pack(self.message_label, anchor="w", pady=(6, 0))
+
+        progress = self._card(outer)
+        head = self._tk.Frame(progress, bg=CARD)
+        self._pack(head, fill="x")
+        self._pack(self._section(head, "Progresso"), side="left")
+        self.percent_label = self._label(
+            head, "—", font=self.percent_font, fg=ACCENT, bg=CARD,
+        )
+        self._pack(self.percent_label, side="right")
+        self.bar = self._tk.Canvas(
+            progress,
+            width=BAR_W,
+            height=BAR_H,
+            bg=CARD,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self._pack(self.bar, anchor="w", pady=(10, 0))
+        self.progress_label = self._label(progress, "", fg=FG, bg=CARD)
+        self._pack(self.progress_label, anchor="w", pady=(8, 0))
+        self.activity_label = self._label(progress, "", fg=MUTED, bg=CARD)
+        self.activity_label.configure(wraplength=BAR_W)
+        self._pack(self.activity_label, anchor="w", pady=(2, 0))
+
+        self._pack(self._section(outer, "Sync"), anchor="w", pady=(14, 0))
+        tiles = self._tk.Frame(outer, bg=BG)
+        self._pack(tiles, fill="x", pady=(6, 0))
+        self.metric_labels = {
+            "criadas": self._metric(tiles, "criadas", "criadas"),
+            "atualizadas": self._metric(tiles, "atualizadas", "atualizadas"),
+            "erros": self._metric(tiles, "erros", "erros"),
+            "bloqueadas": self._metric(tiles, "bloqueadas", "bloqueadas"),
+        }
+        self.sync_label = self._label(outer, "", fg=MUTED, font=self.caption_font)
+        self._pack(self.sync_label, anchor="w", pady=(4, 0))
+
+        self._pack(self._section(outer, "Organize"), anchor="w", pady=(12, 0))
         self.organize_label = self._label(outer, "")
-        self._pack(self.organize_label, anchor="w", pady=(6, 0))
+        self._pack(self.organize_label, anchor="w", pady=(4, 0))
+
         self.error_label = self._label(outer, "", fg=STATE_COLORS["erro"])
+        self.error_label.configure(wraplength=348)
         self._pack(self.error_label, anchor="w", pady=(8, 0))
 
         buttons = self._tk.Frame(outer, bg=BG)
-        self._pack(buttons, fill="x", pady=(18, 0))
-        self._pack(self._button(buttons, "Sincronizar agora", self._on_sync), fill="x")
+        self._pack(buttons, fill="x", pady=(12, 0))
+        self._pack(
+            self._button(buttons, "Sincronizar agora", self._on_sync, primary=True),
+            fill="x",
+        )
         row = self._tk.Frame(buttons, bg=BG)
         self._pack(row, fill="x", pady=(8, 0))
         self._pack(
@@ -574,6 +772,7 @@ class VaultWindow:
             fill="x",
             padx=(4, 0),
         )
+        self._paint_bar(None, STATE_COLORS["idle"])
 
     def visible_text(self) -> str:
         parts = []
@@ -593,17 +792,75 @@ class VaultWindow:
         snap = read_snapshot(self.state_dir)
         state = display_state(snap["status"], snap["paused"])
         message = snap["status"].get("message") or ""
-        self.state_label.configure(text=state, fg=state_color(state))
-        self.message_label.configure(text=message)
-        self.sync_label.configure(text=format_sync_line(snap["metrics"]))
-        progress = format_progress_line(snap["progress"])
-        self.progress_label.configure(text=progress or "")
+        color = state_color(state)
+        progress = snap["progress"]
+        percent = progress_percent(progress)
+        metrics = snap["metrics"] or {}
+        for key, label in self.metric_labels.items():
+            value = metrics.get(key, 0)
+            fg = METRIC_COLORS[key] if value else MUTED
+            label.configure(text=str(value), fg=fg)
+        skipped = "sim" if metrics.get("skipped") else "não"
+        self.sync_label.configure(text=f"skipped: {skipped}")
         self.organize_label.configure(text=format_organize_line(snap["organize"]))
+        if self._busy and state not in ("sincronizando", "erro") and percent is None:
+            self._show_starting()
+            return
+        self._busy = False
+        self.state_label.configure(text=state, fg=color)
+        self.state_dot.configure(fg=color)
+        self.message_label.configure(text=message)
+        self.percent_label.configure(
+            text="—" if percent is None else f"{percent}%",
+            fg=color if percent is not None else MUTED,
+        )
+        self.progress_label.configure(text=format_progress_line(progress) or "")
+        self.activity_label.configure(text=activity_line(state, message, progress))
+        if state == "sincronizando" and percent is None:
+            self._kick_indeterminate()
+        else:
+            self._paint_bar(percent, color)
 
     def show_error(self, message: str):
+        self._busy = False
+        self._stop_indeterminate()
         self._error = message
         self.error_label.configure(text=message)
         self.state_label.configure(text="erro", fg=state_color("erro"))
+        self.state_dot.configure(fg=state_color("erro"))
+        self.activity_label.configure(text=message or "Sync falhou")
+
+    def _on_sync(self):
+        self._busy = True
+        self._show_starting()
+        threading.Thread(target=self._sync_safe, daemon=True).start()
+
+    def _sync_safe(self):
+        message = None
+        try:
+            result = self.actions.pipeline_runner()
+        except Exception as exc:
+            message = str(exc)
+        else:
+            if isinstance(result, int) and result != 0:
+                message = f"Sync falhou ({result})"
+
+        def finish():
+            self._busy = False
+            try:
+                if not self.root.winfo_exists():
+                    return
+            except Exception:
+                return
+            if message:
+                self.show_error(message)
+                return
+            self.refresh()
+
+        try:
+            self.root.after(0, finish)
+        except Exception:
+            self._busy = False
 
     def _on_pause(self):
         try:
@@ -632,23 +889,6 @@ class VaultWindow:
             open_vault(self.vault_path, opener=self.opener)
         except Exception as exc:
             self.show_error(str(exc))
-
-    def _on_sync(self):
-        threading.Thread(target=self._sync_safe, daemon=True).start()
-
-    def _sync_safe(self):
-        message = None
-        try:
-            result = self.actions.pipeline_runner()
-        except Exception as exc:
-            message = str(exc)
-        else:
-            if isinstance(result, int) and result != 0:
-                message = f"Sync falhou ({result})"
-        if message:
-            self.root.after(0, lambda: self.show_error(message))
-            return
-        self.root.after(0, self.refresh)
 
     def poll(self, interval_ms: int):
         self.refresh()

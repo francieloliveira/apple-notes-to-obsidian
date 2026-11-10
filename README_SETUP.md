@@ -28,13 +28,13 @@ Não chama `generate_menubar_icon`. O ícone usado é o `assets/menubar_icon.png
 
 ## Após instalar
 
-- A janela abre com `open ~/Applications/VaultAI.app`
+- A janela abre com `open /Applications/VaultAI.app`
 - Sync automático roda no intervalo de `PIPELINE_INTERVAL_SECS` (no `config.example.py`, 1800 s = 30 min; o `install.sh` lê esse nome)
 
 ## Reabrir a janela
 
 ```bash
-open ~/Applications/VaultAI.app
+open /Applications/VaultAI.app
 ```
 
 ## Reinstalar após mudanças no código
@@ -61,4 +61,4 @@ tail -f ~/.vault/sync.log       # exportação Apple Notes
 
 ## Ícone da menu bar
 
-`install.sh` carrega `vault_menubar.py` com o python de `pipeline_venv_dir` (`agent_python`). Não chama `generate_menubar_icon`. A janela continua `open ~/Applications/VaultAI.app` (`ensure_app`, `/usr/bin/python3`).
+`install.sh` carrega `vault_menubar.py` com o python de `pipeline_venv_dir` (`agent_python`). Não chama `generate_menubar_icon`. A janela abre com `open /Applications/VaultAI.app` (symlink para `~/Applications/VaultAI.app`, `ensure_app`, `/usr/bin/python3`).

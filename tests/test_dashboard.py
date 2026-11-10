@@ -79,6 +79,28 @@ class TestSnapshot(unittest.TestCase):
         self.assertIsNone(dash.format_progress_line({}))
         self.assertIsNone(dash.format_progress_line(None))
 
+    def test_progress_percent_is_share_of_total(self):
+        self.assertEqual(dash.progress_percent({"current": 6, "total": 20}), 30)
+        self.assertIsNone(dash.progress_percent({}))
+        self.assertIsNone(dash.progress_percent(None))
+        self.assertEqual(dash.progress_percent({"current": 25, "total": 20}), 100)
+
+    def test_activity_names_the_stage(self):
+        syncing = dash.activity_line(
+            "sincronizando",
+            "Sincronizando Apple Notes...",
+            {"current": 6, "total": 20},
+        )
+        organizing = dash.activity_line(
+            "sincronizando",
+            "Organizando vault...",
+            None,
+        )
+        self.assertIn("30%", syncing)
+        self.assertIn("Notas", syncing)
+        self.assertIn("Organizando", organizing)
+        self.assertNotIn("%", organizing)
+
 
 class TestHooks(unittest.TestCase):
     def test_pause_calls_hook_and_keeps_it(self):
@@ -403,6 +425,49 @@ class TestWindow(unittest.TestCase):
         self.assertNotIn("Consolas", text)
         self._assert_one_manager(window.root)
 
+    def test_window_shows_percent_and_bar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            _write(state, "metrics.json", FIXTURE_METRICS)
+            _write(state, "status.json", {
+                "state": "running",
+                "message": "Sincronizando Apple Notes...",
+            })
+            _write(state, "progress.json", {"current": 6, "total": 20})
+            window = self._window(state)
+            text = window.visible_text()
+            canvases = []
+
+            def walk(widget):
+                if widget.winfo_class() == "Canvas":
+                    canvases.append(widget)
+                for child in widget.winfo_children():
+                    walk(child)
+
+            walk(window.root)
+        self.assertIn("30%", text)
+        self.assertIn("Notas", text)
+        self.assertTrue(canvases)
+
+    def test_sync_click_shows_starting_feedback(self):
+        import threading
+
+        release = threading.Event()
+
+        def runner():
+            release.wait(2)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            _write(state, "status.json", {"state": "idle", "message": ""})
+            window = self._window(state, pipeline_runner=runner)
+            self._button(window, "Sincronizar agora").invoke()
+            text = window.visible_text()
+            self.assertEqual(window.state_label.cget("text"), "sincronizando")
+            self.assertIn("Iniciando", text)
+        release.set()
+
     def test_pause_button_keeps_callback_and_log_button_is_absolute(self):
         seen = []
 
@@ -497,7 +562,10 @@ class TestInstallPointsAtOneApp(unittest.TestCase):
             text,
         )
         self.assertIn('APP_PYTHON="/usr/bin/python3"', text)
-        self.assertIn("ensure_app(python=", text)
+        self.assertIn("publish_visible_app", text)
+        self.assertLess(text.index("publish_visible_app"), text.index("VAULTAI_APP_ONLY"))
+        self.assertIn('ln -sfn "${target}" "${visible}"', text)
+        self.assertIn("/Applications/VaultAI.app", text)
         self.assertLess(text.index("ensure_app(python="), text.index("pipeline_venv_dir"))
         for line in text.splitlines():
             if "ensure_app" in line:
