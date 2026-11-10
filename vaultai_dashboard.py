@@ -547,7 +547,7 @@ class VaultWindow:
         widget.pack(**kwargs)
         return widget
 
-    def _label(self, parent, text, *, font=None, fg=FG, bg=BG):
+    def _label(self, parent, text, *, font=None, fg=FG, bg=BG, width=None):
         label = self._tk.Label(
             parent,
             text=text,
@@ -557,6 +557,8 @@ class VaultWindow:
             anchor="w",
             justify="left",
         )
+        if width is not None:
+            label.configure(width=width)
         return label
 
     def _button(self, parent, text, command, *, primary=False):
@@ -673,32 +675,103 @@ class VaultWindow:
 
     def _build(self):
         outer = self._tk.Frame(self.root, bg=BG)
-        self._pack(outer, fill="both", expand=True, padx=16, pady=14)
+        self._pack(outer, fill="both", expand=True, padx=18, pady=16)
 
+        # Header: título + estado compacto
         header = self._tk.Frame(outer, bg=BG)
         self._pack(header, fill="x")
         self._pack(
-            self._label(header, "VaultAI", font=self.title_font),
+            self._label(header, "VaultAI", font=self.title_font, fg=FG),
             side="left",
         )
         pill = self._tk.Frame(header, bg=CARD)
         self._pack(pill, side="right")
         self.state_dot = self._label(pill, "●", fg=STATE_COLORS["idle"], bg=CARD)
-        self._pack(self.state_dot, side="left", padx=(8, 0), pady=4)
-        self.state_label = self._label(pill, "idle", fg=STATE_COLORS["idle"], bg=CARD)
-        self._pack(self.state_label, side="left", padx=(4, 8), pady=4)
+        self._pack(self.state_dot, side="left", padx=(8, 4), pady=4)
+        self.state_label = self._label(pill, "idle", fg=STATE_COLORS["idle"], bg=CARD, font=self.caption_font)
+        self._pack(self.state_label, side="left", padx=(0, 8), pady=4)
 
-        self.message_label = self._label(outer, "", fg=MUTED)
-        self.message_label.configure(wraplength=348)
-        self._pack(self.message_label, anchor="w", pady=(6, 0))
+        # ── Boas-vindas (apenas quando estado == "idle") ──
+        snap = read_snapshot(self.state_dir)
+        state = display_state(snap["status"], snap["paused"])
+        self.welcome_card = None
+        if state == "idle":
+            self.welcome_card = self._card(outer)
+            self._pack(self.welcome_card, fill="x", pady=(4, 0))
+            head = self._tk.Frame(self.welcome_card, bg=CARD)
+            self._pack(head, fill="x")
+            self._pack(
+                self._label(head, "👋 Olá! Seu sync do VaultAI está aguardando.",
+                    font=self.caption_font, fg=MUTED),
+                side="left",
+            )
+            self._pack(
+                self._label(head, "Confira os dados abaixo",
+                    font=self.caption_font, fg=MUTED),
+                side="right",
+            )
+            body = self._tk.Frame(self.welcome_card, bg=CARD)
+            self._pack(body, fill="x", padx=16)
+            self._pack(
+                self._label(body, "Sua base do Obsidian está pronta para sincronização.",
+                    font=self.font, fg=FG),
+                anchor="w",
+            )
+            self._pack(
+                self._label(body, "O pipeline assíncrono processará notas do Apple Notes",
+                    font=self.caption_font, fg=MUTED),
+                anchor="w",
+            )
+            self._pack(
+                self._label(body, "e organiza automaticamente com MOC e regras de limpeza.",
+                font=self.caption_font, fg=MUTED),
+                anchor="w",
+            )
+            self._pack(self._section(body, "Status do sync"), anchor="w", pady=(10, 0))
+            self.sync_status = self._label(body, "—", font=self.font, fg=STATE_COLORS["idle"], bg=CARD)
+            self._pack(self.sync_status, anchor="w")
+            self._pack(self._section(body, "Último sync"), anchor="w", pady=(6, 0))
+            self.last_sync_label = self._label(body, "nunca", font=self.caption_font, fg=MUTED, bg=CARD)
+            self._pack(self.last_sync_label, anchor="w")
+            self._pack(self._section(body, "Totais"), anchor="w", pady=(6, 0))
+            self.welcome_totals = self._label(body, "", font=self.caption_font, fg=MUTED, bg=CARD)
+            self._pack(self.welcome_totals, anchor="w")
 
+        # ── Métricas ──
+        self._pack(self._section(outer, "Métricas"), anchor="w", pady=(10, 0))
+        tiles = self._tk.Frame(outer, bg=BG)
+        self._pack(tiles, fill="x", pady=(6, 0))
+        row1 = self._tk.Frame(tiles, bg=BG)
+        self._pack(row1, fill="x", pady=(0, 4))
+        row2 = self._tk.Frame(tiles, bg=BG)
+        self._pack(row2, fill="x")
+        self.metric_labels = {
+            "criadas": self._metric(row1, "criadas", "criadas"),
+            "atualizadas": self._metric(row1, "atualizadas", "atualizadas"),
+            "erros": self._metric(row2, "erros", "erros"),
+            "bloqueadas": self._metric(row2, "bloqueadas", "bloqueadas"),
+        }
+        self.sync_label = self._label(outer, "", fg=MUTED, font=self.caption_font)
+        self._pack(self.sync_label, anchor="w", pady=(4, 0))
+
+        # ── Organize ──
+        self._pack(self._section(outer, "Organize"), anchor="w", pady=(10, 0))
+        self.organize_label = self._label(outer, "")
+        self._pack(self.organize_label, anchor="w", pady=(4, 0))
+
+        # ── Status do sync ──
+        self._pack(self._section(outer, "Status do sync"), anchor="w", pady=(10, 0))
+        self.message_label = self._label(outer, "", fg=MUTED, font=self.caption_font)
+        self._pack(self.message_label, anchor="w", pady=(4, 0))
+
+        # ── Progresso ──
+        self._pack(self._section(outer, "Progresso"), anchor="w", pady=(10, 0))
         progress = self._card(outer)
+        self._pack(progress, fill="x", pady=(4, 0))
         head = self._tk.Frame(progress, bg=CARD)
         self._pack(head, fill="x")
         self._pack(self._section(head, "Progresso"), side="left")
-        self.percent_label = self._label(
-            head, "—", font=self.percent_font, fg=ACCENT, bg=CARD,
-        )
+        self.percent_label = self._label(head, "—", font=self.percent_font, fg=ACCENT, bg=CARD, width=120)
         self._pack(self.percent_label, side="right")
         self.bar = self._tk.Canvas(
             progress,
@@ -708,35 +781,45 @@ class VaultWindow:
             highlightthickness=0,
             borderwidth=0,
         )
-        self._pack(self.bar, anchor="w", pady=(10, 0))
-        self.progress_label = self._label(progress, "", fg=FG, bg=CARD)
-        self._pack(self.progress_label, anchor="w", pady=(8, 0))
+        self._pack(self.bar, anchor="w", pady=(8, 0))
+        self.progress_label = self._label(progress, "", fg=FG, bg=CARD, font=self.caption_font)
+        self._pack(self.progress_label, anchor="w", pady=(6, 2))
         self.activity_label = self._label(progress, "", fg=MUTED, bg=CARD)
         self.activity_label.configure(wraplength=BAR_W)
-        self._pack(self.activity_label, anchor="w", pady=(2, 0))
+        self._pack(self.activity_label, anchor="w", pady=(2, 8))
 
-        self._pack(self._section(outer, "Sync"), anchor="w", pady=(14, 0))
-        tiles = self._tk.Frame(outer, bg=BG)
-        self._pack(tiles, fill="x", pady=(6, 0))
-        self.metric_labels = {
-            "criadas": self._metric(tiles, "criadas", "criadas"),
-            "atualizadas": self._metric(tiles, "atualizadas", "atualizadas"),
-            "erros": self._metric(tiles, "erros", "erros"),
-            "bloqueadas": self._metric(tiles, "bloqueadas", "bloqueadas"),
-        }
-        self.sync_label = self._label(outer, "", fg=MUTED, font=self.caption_font)
-        self._pack(self.sync_label, anchor="w", pady=(4, 0))
-
-        self._pack(self._section(outer, "Organize"), anchor="w", pady=(12, 0))
-        self.organize_label = self._label(outer, "")
-        self._pack(self.organize_label, anchor="w", pady=(4, 0))
+        # ── Progresso ──
+        self._pack(self._section(outer, "Progresso"), anchor="w", pady=(10, 0))
+        progress = self._card(outer)
+        self._pack(progress, fill="x", pady=(4, 0))
+        head = self._tk.Frame(progress, bg=CARD)
+        self._pack(head, fill="x")
+        self._pack(self._section(head, "Progresso"), side="left")
+        self.percent_label = self._label(head, "—", font=self.percent_font, fg=ACCENT, bg=CARD, width=120)
+        self._pack(self.percent_label, side="right")
+        self.bar = self._tk.Canvas(
+            progress,
+            width=BAR_W,
+            height=BAR_H,
+            bg=CARD,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self._pack(self.bar, anchor="w", pady=(8, 0))
+        self.progress_label = self._label(progress, "", fg=FG, bg=CARD, font=self.caption_font)
+        self._pack(self.progress_label, anchor="w", pady=(6, 2))
+        self.activity_label = self._label(progress, "", fg=MUTED, bg=CARD)
+        self.activity_label.configure(wraplength=BAR_W)
+        self._pack(self.activity_label, anchor="w", pady=(2, 8))
 
         self.error_label = self._label(outer, "", fg=STATE_COLORS["erro"])
         self.error_label.configure(wraplength=348)
         self._pack(self.error_label, anchor="w", pady=(8, 0))
 
+        # ── Ações (para o estado idle) ──
+        self._pack(self._section(outer, "Ações"), anchor="w", pady=(10, 0))
         buttons = self._tk.Frame(outer, bg=BG)
-        self._pack(buttons, fill="x", pady=(12, 0))
+        self._pack(buttons, fill="x", pady=(8, 0))
         self._pack(
             self._button(buttons, "Sincronizar agora", self._on_sync, primary=True),
             fill="x",
@@ -773,8 +856,8 @@ class VaultWindow:
             fill="x",
             padx=(4, 0),
         )
-        self._paint_bar(None, STATE_COLORS["idle"])
 
+        self._paint_bar(None, STATE_COLORS["idle"])
     def _show_idle_state(self):
         """Exibe um estado inicial útil e polido ao abrir a janela."""
         color = STATE_COLORS["idle"]
