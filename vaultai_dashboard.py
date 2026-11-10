@@ -540,6 +540,7 @@ class VaultWindow:
         self._animating = False
         self._anim_id = None
         self._build()
+        self._show_idle_state()
         self.refresh()
 
     def _pack(self, widget, **kwargs):
@@ -773,6 +774,19 @@ class VaultWindow:
             padx=(4, 0),
         )
         self._paint_bar(None, STATE_COLORS["idle"])
+
+    def _show_idle_state(self):
+        """Exibe um estado inicial útil e polido ao abrir a janela."""
+        color = STATE_COLORS["idle"]
+        self.state_label.configure(text="Pronto", fg=color)
+        self.percent_label.configure(text="—", fg=MUTED)
+        self.progress_label.configure(text="")
+        self.activity_label.configure(text="VaultAI está aguardando o próximo sync automático")
+        self.sync_label.configure(text="")
+        self.message_label.configure(text="")
+        self.error_label.configure(text="")
+        for label in self.metric_labels.values():
+            label.configure(text="0", fg=MUTED)
 
     def visible_text(self) -> str:
         parts = []
