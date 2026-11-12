@@ -15,14 +15,14 @@ cd apple-notes-to-obsidian
 
 make test     # swift test
 make app      # gera build/VaultAI.app
-make install  # instala em ~/Applications
-open ~/Applications/VaultAI.app
+make install  # instala em /Applications
+open /Applications/VaultAI.app
 ```
 
 O `scripts/install.sh` faz tudo:
 
 1. Compila o app em Release
-2. Copia o bundle para `~/Applications/VaultAI.app` e cria o atalho `/Applications/VaultAI.app`
+2. Copia o bundle para `/Applications/VaultAI.app` (ou `~/Applications` sem permissão) e registra no Spotlight
 3. Remove os LaunchAgents antigos (`com.vaultai.pipeline`, `com.vaultai.menubar`) para não sincronizar duas vezes
 
 ## Primeiro sync
@@ -33,7 +33,7 @@ Se negar por engano: **Ajustes do Sistema → Privacidade e Segurança → Autom
 
 ## Após instalar
 
-- O dashboard abre com `open ~/Applications/VaultAI.app`
+- O dashboard abre com `open /Applications/VaultAI.app`
 - O ícone fica na menu bar; fechar a janela não encerra o app
 - O sync automático roda no intervalo configurado em **Ajustes** (padrão: 30 min)
 - **Iniciar com o sistema** registra o app como item de login (`SMAppService`)

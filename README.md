@@ -44,11 +44,11 @@ make app      # gera build/VaultAI.app
 ### 3. Instale
 
 ```bash
-make install  # copia para ~/Applications e remove LaunchAgents antigos
-open ~/Applications/VaultAI.app
+make install  # instala em /Applications e remove LaunchAgents antigos
+open /Applications/VaultAI.app
 ```
 
-`scripts/install.sh` monta o bundle Release, instala em `~/Applications/VaultAI.app`, cria o atalho `/Applications/VaultAI.app` quando possível e remove os LaunchAgents `com.vaultai.pipeline` / `com.vaultai.menubar` para não sincronizar duas vezes.
+`scripts/install.sh` monta o bundle Release, instala em `/Applications/VaultAI.app` (ou `~/Applications` se não houver permissão), registra no LaunchServices, indexa no Spotlight e remove os LaunchAgents `com.vaultai.pipeline` / `com.vaultai.menubar` para não sincronizar duas vezes.
 
 ### 4. Permissão de Automação
 
@@ -59,7 +59,7 @@ Se negar por engano: **Ajustes do Sistema → Privacidade e Segurança → Autom
 ### 5. Abra o dashboard
 
 ```bash
-open ~/Applications/VaultAI.app
+open /Applications/VaultAI.app
 ```
 
 O app abre o dashboard e mantém o ícone na menu bar. Fechar a janela não encerra o app: use **Sair** no painel da menu bar (ou ⌘Q).
@@ -210,7 +210,7 @@ apple-notes-to-obsidian/
 └── README.md
 ```
 
-`build/VaultAI.app` é gerado por `make app`; o app instalado fica em `~/Applications/VaultAI.app` com atalho em `/Applications`. O estado compartilhado fica em `~/.vault`.
+`build/VaultAI.app` é gerado por `make app`; o app instalado fica em `/Applications/VaultAI.app`. O estado compartilhado fica em `~/.vault`.
 
 ---
 
@@ -264,7 +264,7 @@ Se o app instalado estiver desatualizado:
 
 ```bash
 make install
-open ~/Applications/VaultAI.app
+open /Applications/VaultAI.app
 ```
 
 Verifique também se o processo já está rodando (`pgrep -fl VaultAI`). O app é um agente de menu bar: fechar a janela não encerra o processo.
