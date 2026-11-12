@@ -213,9 +213,12 @@ struct ProgressRing: View {
                         .monospacedDigit()
                         .foregroundStyle(.white)
                 } else if isActive {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(color)
+                    Circle()
+                        .fill(color)
+                        .frame(width: max(5, size * 0.06), height: max(5, size * 0.06))
+                        .opacity(spinning ? 0.35 : 1)
+                        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: spinning)
+                        .onAppear { spinning = true }
                 } else if let symbol {
                     Image(systemName: symbol)
                         .font(.system(size: size * 0.27, weight: .bold))
@@ -439,29 +442,39 @@ struct GradientProgressBar: View {
     let color: Color
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white.opacity(0.07))
-
-                if let percent {
+        if percent != nil || isActive {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(LinearGradient(colors: [color, Theme.blue], startPoint: .leading, endPoint: .trailing))
-                        .frame(width: max(6, geo.size.width * CGFloat(percent) / 100))
-                        .shadow(color: color.opacity(0.5), radius: 5)
-                        .animation(.easeInOut(duration: 0.6), value: percent)
-                } else if isActive {
-                    TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-                        let cycle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6) / 1.6
+                        .fill(percent != nil ? Color.white.opacity(0.09) : color.opacity(0.20))
+
+                    if let percent {
                         Capsule()
-                            .fill(LinearGradient(colors: [color.opacity(0.2), color, color.opacity(0.2)], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: max(40, geo.size.width * 0.28))
-                            .offset(x: (geo.size.width + 40) * cycle - 40)
+                            .fill(LinearGradient(colors: [color, Theme.blue], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(6, geo.size.width * CGFloat(percent) / 100))
+                            .shadow(color: color.opacity(0.5), radius: 5)
+                            .animation(.easeInOut(duration: 0.6), value: percent)
+                    } else if isActive {
+                        TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+                            let cycle = context.date.timeIntervalSinceReferenceDate
+                                .truncatingRemainder(dividingBy: 1.8) / 1.8
+                            let band = max(60, geo.size.width * 0.45)
+                            Capsule()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [color.opacity(0), color.opacity(0.9), color.opacity(0)],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: band)
+                                .offset(x: -band + (geo.size.width + band) * cycle)
+                        }
+                        .clipShape(Capsule())
                     }
-                    .clipShape(Capsule())
                 }
             }
+            .frame(height: 6)
         }
-        .frame(height: 6)
     }
 }

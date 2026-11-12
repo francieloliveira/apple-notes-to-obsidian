@@ -122,18 +122,25 @@ public struct DashboardSnapshot: Sendable {
         let text = message
         let lowered = text.lowercased()
         let stage: String
+        let pending: String
         if lowered.contains("organiz") {
             stage = "Organizando"
+            pending = "Organizando o vault…"
+        } else if lowered.contains("simul") {
+            stage = "Simulando"
+            pending = "Simulando o sync…"
         } else if lowered.contains("notes") || lowered.contains("sincron") {
-            stage = "Notas"
+            stage = "Lendo notas"
+            pending = "Lendo notas do Apple Notes…"
         } else {
             stage = ""
+            pending = "Preparando o sync…"
         }
 
         switch displayState {
         case .sincronizando:
             if let pct = percent { return "\(stage.isEmpty ? "Sync" : stage) · \(pct)%" }
-            return stage.isEmpty ? "Preparando o sync…" : stage
+            return pending
         case .pausa:
             return "Sync automático pausado"
         case .erro:

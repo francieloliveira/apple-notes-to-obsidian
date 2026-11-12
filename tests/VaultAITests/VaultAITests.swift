@@ -64,6 +64,106 @@ final class VaultAITests: XCTestCase {
         XCTAssertFalse(aliases.contains("New Name"))
     }
 
+    // MARK: - Estado / lock
+
+    func testActivityDuringSyncIsAPhrase() {
+        var snapshot = DashboardSnapshot()
+        snapshot.rawState = "running"
+        snapshot.message = "Sincronizando Apple Notes..."
+        XCTAssertEqual(snapshot.activity, "Lendo notas do Apple Notes…")
+
+        snapshot.message = "Simulando sync..."
+        XCTAssertEqual(snapshot.activity, "Simulando o sync…")
+
+        snapshot.message = "Organizando vault..."
+        XCTAssertEqual(snapshot.activity, "Organizando o vault…")
+
+        snapshot.progress = ProgressInfo(current: 3, total: 10)
+        snapshot.message = "Sincronizando Apple Notes..."
+        XCTAssertEqual(snapshot.activity, "Lendo notas · 30%")
+    }
+
+    func testPipelineLockIgnoresDeadProcess() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultai-lock-\(UUID().uuidString)")
+        let original = PipelineLock.path
+        PipelineLock.path = tmp.path
+        defer {
+            try? FileManager.default.removeItem(at: tmp)
+            PipelineLock.path = original
+        }
+
+        try "999999".write(to: tmp, atomically: true, encoding: .utf8)
+        XCTAssertFalse(PipelineLock.isRunning())
+        XCTAssertTrue(PipelineLock.clearIfStale())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.path))
+    }
+
+    func testPipelineLockSeesLiveProcess() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultai-lock-\(UUID().uuidString)")
+        let original = PipelineLock.path
+        PipelineLock.path = tmp.path
+        defer {
+            try? FileManager.default.removeItem(at: tmp)
+            PipelineLock.path = original
+        }
+
+        try "\(getpid())".write(to: tmp, atomically: true, encoding: .utf8)
+        XCTAssertTrue(PipelineLock.isRunning())
+        XCTAssertFalse(PipelineLock.clearIfStale())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path))
+    }
+
+    func testReconcileClearsInterruptedSync() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultai-reconcile-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let config = AppConfig(
+            vaultPath: root.appendingPathComponent("vault").path,
+            stateDir: root.appendingPathComponent("state").path
+        )
+
+        let original = PipelineLock.path
+        PipelineLock.path = root.appendingPathComponent("lock").path
+        defer { PipelineLock.path = original }
+
+        StateStore.writeStatus(config: config, state: "running", message: "Sincronizando Apple Notes...")
+        StateStore.writeProgress(config: config, ProgressInfo(current: 3, total: 10))
+
+        XCTAssertTrue(StateStore.reconcileInterruptedRun(config: config))
+
+        let snapshot = StateStore.snapshot(config: config)
+        XCTAssertEqual(snapshot.rawState, "error")
+        XCTAssertEqual(snapshot.message, "Sync interrompido")
+        XCTAssertNil(snapshot.percent)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: config.progressURL.path))
+    }
+
+    func testReconcileKeepsLiveSync() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultai-reconcile-live-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let config = AppConfig(
+            vaultPath: root.appendingPathComponent("vault").path,
+            stateDir: root.appendingPathComponent("state").path
+        )
+
+        let lock = root.appendingPathComponent("lock")
+        let original = PipelineLock.path
+        PipelineLock.path = lock.path
+        defer { PipelineLock.path = original }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "\(getpid())".write(to: lock, atomically: true, encoding: .utf8)
+        StateStore.writeStatus(config: config, state: "running", message: "Sincronizando Apple Notes...")
+
+        XCTAssertFalse(StateStore.reconcileInterruptedRun(config: config))
+        XCTAssertEqual(StateStore.snapshot(config: config).rawState, "running")
+    }
+
     // MARK: - Organizer
 
     private func makeVault(_ files: [String: String]) throws -> (root: URL, vault: URL, state: URL) {

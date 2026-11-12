@@ -20,8 +20,9 @@ final class AppModel: ObservableObject {
     init() {
         let loaded = ConfigStore.load()
         config = loaded
-        snapshot = StateStore.snapshot(config: loaded)
         try? FileManager.default.createDirectory(at: loaded.stateURL, withIntermediateDirectories: true)
+        StateStore.reconcileInterruptedRun(config: loaded)
+        snapshot = StateStore.snapshot(config: loaded)
 
         startPolling()
         scheduleAutoSync()
@@ -79,6 +80,9 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() {
+        if !isRunning, snapshot.rawState == "running", !PipelineLock.isRunning() {
+            StateStore.reconcileInterruptedRun(config: config)
+        }
         snapshot = StateStore.snapshot(config: config)
     }
 

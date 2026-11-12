@@ -101,7 +101,7 @@ struct DashboardView: View {
 
                         Spacer()
 
-                        if let elapsed = model.snapshot.elapsed, elapsed > 0 {
+                        if let elapsed = model.snapshot.elapsed, elapsed >= 1 {
                             Text("\(Int(elapsed.rounded()))s")
                                 .font(Theme.font(9, .semibold))
                                 .foregroundStyle(Theme.muted)
@@ -140,6 +140,7 @@ struct DashboardView: View {
         if model.percent != nil { return "progresso" }
         switch model.displayState {
         case .ok: return "em dia"
+        case .sincronizando: return "lendo"
         case .pausa: return "pausado"
         case .erro: return "atenção"
         default: return "aguardando"

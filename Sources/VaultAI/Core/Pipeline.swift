@@ -11,11 +11,48 @@ public struct PipelineResult: Sendable {
     }
 }
 
+/// Lock do pipeline. Guarda o PID do processo que está sincronizando para
+/// distinguir uma execução real de um lock deixado por um processo morto.
+public enum PipelineLock {
+    public static var path = "/tmp/vault_pipeline.lock"
+
+    public static func pid() -> pid_t? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = pid_t(trimmed), value > 0 else { return nil }
+        return value
+    }
+
+    public static func isAlive(_ pid: pid_t) -> Bool {
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    /// Há um pipeline de verdade rodando agora?
+    public static func isRunning() -> Bool {
+        guard let pid = pid() else { return false }
+        return isAlive(pid)
+    }
+
+    /// Remove o lock quando o processo que o criou já terminou.
+    @discardableResult
+    public static func clearIfStale() -> Bool {
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        guard let pid = pid() else {
+            try? FileManager.default.removeItem(atPath: path)
+            return true
+        }
+        guard !isAlive(pid) else { return false }
+        try? FileManager.default.removeItem(atPath: path)
+        return true
+    }
+}
+
 /// Orquestrador nativo: lock, sync, organize, status e notificação.
 public final class Pipeline {
     private let config: AppConfig
     private let logger: VaultLogger
-    private let lockPath = "/tmp/vault_pipeline.lock"
+    private let lockPath = PipelineLock.path
     private let stepTimeout: TimeInterval = 700
 
     public init(config: AppConfig) {
@@ -39,7 +76,11 @@ public final class Pipeline {
         defer { releaseLock() }
 
         let started = Date()
-        StateStore.writeStatus(config: config, state: "running", message: "Sincronizando Apple Notes...")
+        StateStore.writeStatus(
+            config: config,
+            state: "running",
+            message: dryRun ? "Simulando sync..." : "Sincronizando Apple Notes..."
+        )
 
         let sync = VaultSync(config: config, logger: VaultLogger(fileURL: config.syncLogURL))
         let syncOK = sync.run(full: full, dryRun: dryRun, verbose: verbose)
@@ -120,15 +161,23 @@ public final class Pipeline {
     private func acquireLock() -> Bool {
         let fm = FileManager.default
         if fm.fileExists(atPath: lockPath) {
-            let attributes = try? fm.attributesOfItem(atPath: lockPath)
-            let modified = (attributes?[.modificationDate] as? Date) ?? .distantPast
-            let age = Date().timeIntervalSince(modified)
-            if age < stepTimeout * 2 {
-                logger.log("!! Lock ativo (\(Int(age))s). Pipeline já em execução. Saindo.")
-                return false
+            let pid = PipelineLock.pid()
+            let alive = pid.map(PipelineLock.isAlive) ?? false
+
+            if !alive {
+                logger.log("Lock órfão (processo \(pid.map(String.init) ?? "?") já terminou). Removendo e continuando.")
+                try? fm.removeItem(atPath: lockPath)
+            } else {
+                let attributes = try? fm.attributesOfItem(atPath: lockPath)
+                let modified = (attributes?[.modificationDate] as? Date) ?? .distantPast
+                let age = Date().timeIntervalSince(modified)
+                if age < stepTimeout * 2 {
+                    logger.log("!! Lock ativo (pid \(pid!), \(Int(age))s). Pipeline já em execução. Saindo.")
+                    return false
+                }
+                logger.log("Lock antigo (\(Int(age))s). Removendo e continuando.")
+                try? fm.removeItem(atPath: lockPath)
             }
-            logger.log("Lock antigo (\(Int(age))s). Removendo e continuando.")
-            try? fm.removeItem(atPath: lockPath)
         }
         fm.createFile(atPath: lockPath, contents: Data("\(ProcessInfo.processInfo.processIdentifier)".utf8))
         return true

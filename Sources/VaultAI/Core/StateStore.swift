@@ -111,6 +111,21 @@ public enum StateStore {
         JSONFile.write(SyncMetrics.empty.dictionary, to: config.metricsURL)
     }
 
+    /// Corrige o status quando o app foi encerrado no meio de um sync:
+    /// o status fica "running" e o lock vira órfão, travando a UI e os
+    /// próximos syncs. Marca como interrompido e libera o lock.
+    @discardableResult
+    public static func reconcileInterruptedRun(config: AppConfig) -> Bool {
+        let status = JSONFile.object(at: config.statusURL)
+        guard JSONFile.string(status, "state") == "running" else { return false }
+        guard !PipelineLock.isRunning() else { return false }
+
+        PipelineLock.clearIfStale()
+        clearProgress(config: config)
+        writeStatus(config: config, state: "error", message: "Sync interrompido")
+        return true
+    }
+
     public static func readMetrics(config: AppConfig) -> SyncMetrics {
         return SyncMetrics.from(JSONFile.object(at: config.metricsURL))
     }
