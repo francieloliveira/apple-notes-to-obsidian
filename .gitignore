@@ -1,3 +1,7 @@
+# Swift
+.build/
+.swiftpm/
+
 # Python
 __pycache__/
 *.py[cod]

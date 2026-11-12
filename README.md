@@ -1,23 +1,29 @@
 # VaultAI
 
-Sincronização automática entre **Apple Notes** e **Obsidian** no macOS, com organização inteligente. A janela é `ensure_app` em `vaultai_dashboard.py`. O ícone da menu bar é `vault_menubar.py`, subido pelo `install.sh` no venv do pipeline.
+Sincronização automática entre **Apple Notes** e **Obsidian** no macOS — com app nativo em **Swift/SwiftUI**.
+
+O app nativo (`Sources/VaultAI`) é a interface principal: dashboard, painel na menu bar, ajustes e agendamento próprio. Os scripts Python originais continuam no repositório como **legado/referência** e para uso via terminal (`pipeline.py`, `notes_to_obsidian.py`, `organize_vault.py`).
 
 ## ✨ Funcionalidades
 
-- **Sync Apple Notes → Obsidian** — Exporta notas preservando formatação, imagens e anexos (unidirecional)
-- **Organização automática** — Classifica por domínio no MOC (`generate_moc`, `_index/`) e cria links por título citado ou tag (`find_links`)
-- **Detecção de lixo** — Move automaticamente notas vazias ou com nomes genéricos para pasta `_lixo`
-- **Janela** — Acompanhe o sync com `open /Applications/VaultAI.app` (atalho do Finder; o bundle real continua em `~/Applications`)
-- **Menu bar** — `install.sh` carrega `com.vaultai.menubar` (`vault_menubar.py`) com o python de `pipeline_venv_dir`, não com `/usr/bin/python3` e nunca com um `.venv` dataless. O ícone é `assets/menubar_icon.png`
-- **Incremental** — Processa apenas notas novas ou modificadas desde o último sync
-- **Resiste a falhas** — Checkpointing permite retomar syncs interrompidos
+- **Sync Apple Notes → Obsidian** — exporta notas preservando formatação, imagens e anexos (unidirecional)
+- **Organização automática** — MOC por domínio em `_index/` e links por título citado ou tag em comum
+- **Detecção de lixo** — move notas vazias ou com nomes genéricos para `_lixo`
+- **App nativo** — dashboard SwiftUI com progresso, métricas, pausa, sync completo e simulação (dry-run)
+- **Menu bar** — estado do sync, atalhos e ações rápidas
+- **Agendamento próprio** — timer nativo no intervalo configurado; sem LaunchAgent
+- **Iniciar com o sistema** — item de login via `SMAppService`
+- **Incremental** — processa só notas novas/modificadas desde o último sync
+- **Resiste a falhas** — checkpointing retoma syncs interrompidos
+- **Privacidade** — notas com senha/token/API key ficam só no Apple Notes; tudo roda local
 
 ## 📋 Pré-requisitos
 
-- **macOS** 13 (Ventura) ou superior — tags do Notes (`AS_FETCH_ONE` em `notes_to_obsidian.py`) existem a partir do Ventura
-- **Python** 3.9+
-- **Apple Notes** (app nativo do macOS)
+- **macOS** 13 (Ventura) ou superior
+- **Swift 5.9+** (Xcode Command Line Tools ou Xcode)
+- **Apple Notes** (app nativo)
 - **Obsidian** (opcional, para visualizar o vault)
+- Python 3.9+ apenas para o pipeline legado
 
 ## 🚀 Instalação
 
@@ -28,41 +34,74 @@ git clone https://github.com/francieloliveira/apple-notes-to-obsidian.git
 cd apple-notes-to-obsidian
 ```
 
-### 2. Configure as variáveis de ambiente
-
-Copie o template e ajuste conforme necessário:
+### 2. Compile e teste
 
 ```bash
-cp config.example.py config.py
+make test     # swift test (10 testes)
+make app      # gera build/VaultAI.app
 ```
 
-Edite `config.py` se quiser paths personalizados:
-
-```python
-VAULT_PATH = "~/VaultAI"       # Caminho para seu vault Obsidian
-VAULTAI_HOME = "~/IntegraNotesMacObsidian"  # Repositório local
-```
-
-### 3. Instale tudo
+### 3. Instale
 
 ```bash
-chmod +x install.sh
-./install.sh
+make install  # copia para ~/Applications e remove LaunchAgents antigos
+open ~/Applications/VaultAI.app
 ```
 
-`install.sh` cria o atalho `~/Applications/VaultAI.app` (`ensure_app` em `vaultai_dashboard.py`) e publica o mesmo bundle em `/Applications/VaultAI.app`, que é a pasta Aplicativos do Finder. O executável da janela chama `/usr/bin/python3`, nunca um python debaixo de `.venv`. O venv do pipeline vem de `pipeline_venv_dir`: `.venv` no repositório só se o projeto não está no iCloud; no iCloud fica em `~/Library/Application Support/VaultAI/venv`. O script instala as dependências nesse venv (`rumps` para a menu bar), configura o LaunchAgent do pipeline (intervalo `PIPELINE_INTERVAL_SECS` do `config.py`; no example, 1800 s = 30 min), carrega `com.vaultai.menubar` com esse mesmo python em `vault_menubar.py` e rotaciona logs grandes. A janela não herda esse python.
+`scripts/install.sh` monta o bundle Release, instala em `~/Applications/VaultAI.app`, cria o atalho `/Applications/VaultAI.app` quando possível e remove os LaunchAgents `com.vaultai.pipeline` / `com.vaultai.menubar` para não sincronizar duas vezes.
 
-### 4. Ícone da menu bar
+### 4. Permissão de Automação
 
-`install.sh` carrega `vault_menubar.py` com o python de `pipeline_venv_dir`. O ícone é `assets/menubar_icon.png` (`MENUBAR_ICON_PATH`). `install.sh` não chama `generate_menubar_icon`; se o png não existir, o rumps sobe sem imagem.
+No primeiro sync o macOS pergunta se o VaultAI pode controlar o **Notes**. Autorize.
 
-### 5. Abra a janela
+Se negar por engano: **Ajustes do Sistema → Privacidade e Segurança → Automação → VaultAI → Notes**.
+
+### 5. Abra o dashboard
 
 ```bash
-open /Applications/VaultAI.app
+open ~/Applications/VaultAI.app
 ```
 
-O atalho é o de `ensure_app`: `exec /usr/bin/python3` na fonte `vaultai_dashboard.py`. `.venv/bin/python3` não abre a janela.
+O app abre o dashboard e mantém o ícone na menu bar. Fechar a janela não encerra o app: use **Sair** no painel da menu bar (ou ⌘Q).
+
+---
+
+## 🖥️ App nativo (Swift)
+
+| Camada | Arquivo | Papel |
+|---|---|---|
+| Entrada/UI | `Sources/VaultAI/App/VaultAIApp.swift` | Scenes: dashboard, menu bar, ajustes |
+| Estado | `Sources/VaultAI/App/AppModel.swift` | Polling, sync, pausa, item de login |
+| Orquestração | `Sources/VaultAI/Core/Pipeline.swift` | Lock, sync → organize, status, notificação |
+| Sync | `Sources/VaultAI/Core/VaultSync.swift` | Porta de `notes_to_obsidian.py` |
+| Organize | `Sources/VaultAI/Core/VaultOrganizer.swift` | Porta de `organize_vault.py` |
+| Apple Notes | `Sources/VaultAI/Core/AppleNotesService.swift` | AppleScript em paralelo |
+| Markdown | `Sources/VaultAI/Core/MarkdownRenderer.swift` | HTML → Markdown, imagens, checklists |
+| Estado | `Sources/VaultAI/Core/StateStore.swift` | `status.json`, `progress.json`, métricas |
+| Visual | `Sources/VaultAI/UI/` | Tema, dashboard, menu bar, ajustes |
+
+O app mantém o mesmo formato de estado em `~/.vault` do pipeline Python (`status.json`, `metrics.json`, `notes_state.json`, `note_paths.json`, `sync_checkpoint.json`). É seguro alternar entre o app e o pipeline legado.
+
+### Desenvolvimento
+
+```bash
+swift build
+swift test
+./scripts/build-app.sh debug
+# roda com estado e vault temporários, sem tocar no vault real:
+VAULTAI_STATE_DIR=/tmp/vaultai-state VAULT_PATH=/tmp/VaultAITest \
+  ./build/VaultAI.app/Contents/MacOS/VaultAI
+```
+
+### Configuração
+
+O app lê, nesta ordem: padrões → `config.py` legado (apenas atribuições simples) → `~/.vault/config.json` → variáveis de ambiente. A tela **Ajustes** (⌘,) grava `~/.vault/config.json`.
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `VAULT_PATH` | `~/VaultAI` | Caminho do vault Obsidian |
+| `VAULTAI_STATE_DIR` | `~/.vault` | Diretório de estado/logs |
+| `VAULT_SYNC_ROOT` | vazio | Subpasta do vault (ex.: `Notes`) |
 
 ---
 
@@ -111,38 +150,34 @@ A tabela é o `DOMAIN_KEYWORDS` de `config.example.py`. O sync importa o `config
 
 ## 🎯 Uso
 
-### Janela
+### Dashboard
 
-Para acompanhar o sync, abra a janela ou use o ícone que `install.sh` sobe (`com.vaultai.menubar`).
+A janela principal mostra estado, atividade, progresso, métricas do último sync e ações:
 
-```bash
-open /Applications/VaultAI.app
-```
+- **Sincronizar agora** (⌘R) — sync incremental
+- **Sync completo** (⇧⌘R) — reprocessa o vault inteiro
+- **Simular** — dry-run, sem gravar nada
+- **Pausar / Retomar** — grava/apaga `~/.vault/sync_paused`
+- **Abrir vault** / **Abrir log** — abrem no Finder/TextEdit
+- **Ajustes** (⌘,) — vault, intervalo, workers, privacidade e domínios
 
-`ensure_app` grava o executável que chama `vaultai_dashboard.py` com `/usr/bin/python3`. Não use `.venv/bin/python3` para abrir o app.
+### Menu bar
 
-A janela mostra estado, mensagem, contagens do sync (`format_sync_line`), progresso e organize (`format_organize_line`). Botões: **Sincronizar agora** (`run_pipeline`, sem `--full`), **Pausar** / **Retomar** (grava ou apaga `~/.vault/sync_paused`), **Abrir vault**, **Abrir log** (`PIPELINE_LOG` no TextEdit). Não há sync completo, dry-run nem “iniciar com o sistema” nessa janela.
+O ícone reflete o estado (sincronizando, erro, pausa) e abre um painel com progresso, métricas rápidas, **Sincronizar agora**, pausa, abrir app e sair.
 
-`vault_menubar.py` é o dropdown do ícone (cubo, Sincronizar, login). `install.sh` carrega `com.vaultai.menubar` com o python de `agent_python` / `pipeline_venv_dir`. Não é o executável da janela: a janela continua `exec /usr/bin/python3` via `ensure_app`.
+### Terminal (pipeline legado)
 
-### Terminal (pipeline — não abre a janela)
-
-O python abaixo é o que `install.sh` imprime em “Pipeline venv” (`pipeline_venv_dir`). Fora do iCloud é o `.venv` do repositório; no iCloud é `~/Library/Application Support/VaultAI/venv`. Não é o interpreter da janela.
+Os scripts Python continuam funcionando e compartilham o mesmo estado:
 
 ```bash
 # Sync normal (apenas notas novas/modificadas)
 "$PYTHON" ~/IntegraNotesMacObsidian/pipeline.py
 
-# Sync completo: --full reprocessa o vault inteiro.
-# O nome do .md segue sanitize_title_for_filename / resolve_human_note_path (política B).
-# note_id_slug() não entra no nome — não há sufixo de hash.
+# Sync completo: --full reprocessa o vault inteiro
 "$PYTHON" ~/IntegraNotesMacObsidian/pipeline.py --full
 
 # Dry run (simulação)
 "$PYTHON" ~/IntegraNotesMacObsidian/pipeline.py --dry-run
-
-# Testes. Não abre a janela.
-/usr/bin/python3 -m unittest discover -s tests
 ```
 
 ---
@@ -151,33 +186,31 @@ O python abaixo é o que `install.sh` imprime em “Pipeline venv” (`pipeline_
 
 ```
 apple-notes-to-obsidian/
-├── vaultai_dashboard.py     # Entry point da janela. install.sh gera ~/Applications/VaultAI.app
-├── pipeline.py              # Orquestrador: sync → organize
-├── notes_to_obsidian.py     # Export Apple Notes → Markdown
-├── organize_vault.py        # Organização e links
-├── utils.py                 # Utilitários (logs, nomes de arquivo, note_id_slug)
-├── config_import.py         # Importa config.py pelos nomes exigidos
-├── vault_menubar.py         # Ícone da menu bar; install.sh carrega com agent_python
-├── install.sh               # venv do pipeline + LaunchAgents + atalho da janela
-├── requirements.txt         # Dependências Python
-├── generate_vaultai_icon.py # Gera VaultAI.iconset; o install não chama
-├── VaultAI.icns             # Ícone solto na raiz
-├── VaultAI.iconset/         # Tamanhos usados pelo gerador
-├── assets/
-│   ├── menubar_icon.png     # Ícone do cubo (MENUBAR_ICON_PATH)
-│   └── generate_menubar_icon.py
-├── tests/                   # Testes unitários
+├── Package.swift            # Swift Package Manager (app + testes)
+├── Makefile                 # build, app, run, test, install
+├── Sources/VaultAI/
+│   ├── App/                 # VaultAIApp, AppModel
+│   ├── Core/                # Pipeline, VaultSync, VaultOrganizer, Notes, Estado
+│   └── UI/                  # Dashboard, MenuPanel, Settings, Theme
+├── tests/VaultAITests/      # Testes Swift (XCTest)
+├── Resources/Info.plist     # Bundle do app
+├── scripts/
+│   ├── build-app.sh         # Monta build/VaultAI.app
+│   └── install.sh           # Instala e remove LaunchAgents antigos
+├── pipeline.py              # [legado] Orquestrador: sync → organize
+├── notes_to_obsidian.py     # [legado] Export Apple Notes → Markdown
+├── organize_vault.py        # [legado] Organização e links
+├── utils.py                 # [legado] Utilitários
+├── vaultai_dashboard.py     # [legado] Dashboard Tkinter
+├── vault_menubar.py         # [legado] Ícone da menu bar (rumps)
+├── install.sh               # [legado] Instalação Python
+├── config.example.py        # Template de configuração legada
 ├── config.py                # Configuração local (não versionado)
-├── config.py.bak            # Backup local da taxonomia (não versionado)
-├── config.example.py        # Template de configuração
-├── sanitize_for_github.py   # Script de sanitização para publicação
-├── README_SETUP.md
-├── .gitignore
-├── LICENSE
+├── VaultAI.icns             # Ícone do app
 └── README.md
 ```
 
-A janela instalada é `vaultai_dashboard.py`. `install.sh` gera `~/Applications/VaultAI.app` (`ensure_app`, bundle `com.vaultai.app`) e carrega `com.vaultai.menubar` (`vault_menubar.py`, python de `pipeline_venv_dir`). `pipeline.py` continua chamando `notes_to_obsidian.py` e `organize_vault.py`.
+`build/VaultAI.app` é gerado por `make app`; o app instalado fica em `~/Applications/VaultAI.app` com atalho em `/Applications`. O estado compartilhado fica em `~/.vault`.
 
 ---
 
@@ -188,8 +221,10 @@ A janela instalada é `vaultai_dashboard.py`. `install.sh` gera `~/Applications/
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
 | `VAULT_PATH` | `~/VaultAI` | Caminho do vault Obsidian |
-| `SCRIPTS_DIR` | `~/IntegraNotesMacObsidian` | Diretório dos scripts |
-| `VAULTAI_HOME` | `~/IntegraNotesMacObsidian` | Repositório. O venv do pipeline é `pipeline_venv_dir`, não um `.venv` fixo aqui |
+| `VAULTAI_STATE_DIR` | `~/.vault` | Diretório de estado e logs |
+| `VAULT_SYNC_ROOT` | vazio | Subpasta do vault (ex.: `Notes`) |
+| `SCRIPTS_DIR` | `~/IntegraNotesMacObsidian` | [legado] Diretório dos scripts Python |
+| `VAULTAI_HOME` | `~/IntegraNotesMacObsidian` | [legado] Repositório do pipeline Python |
 
 ### Arquivos de Estado (não versionados)
 
@@ -200,10 +235,10 @@ O VaultAI mantém estado em `~/.vault/`:
 ├── pipeline.log           # Log do orquestrador
 ├── sync.log               # Log detalhado do sync
 ├── organize.log           # Log da organização
-├── menubar.log            # vault_menubar.py, carregado por install.sh
-├── status.json            # Lido pela janela (read_snapshot em vaultai_dashboard.py)
+├── config.json            # Configuração nativa (Ajustes)
+├── status.json            # Estado lido pelo dashboard
 ├── sync_paused            # Presente = sync automático desativado
-├── login_disabled         # Só vault_menubar.py. A janela não lê. Presente = não iniciar o ícone com o sistema
+├── metrics.json           # Últimas métricas do sync
 ├── notes_state.json       # Estado das notas (timestamps)
 ├── notes_ids.json         # Mapeamento de IDs
 ├── vault_dirty.json       # Notas modificadas (delta)
@@ -218,29 +253,34 @@ Estes arquivos são ignorados pelo `.gitignore` — não os versionar.
 
 ## 🛠️ Troubleshooting
 
-### A janela não abre
+### O app não abre
 
 ```bash
-open /Applications/VaultAI.app
-./install.sh
+make app
+open build/VaultAI.app
 ```
 
-O atalho em `~/Applications/VaultAI.app` é o de `ensure_app`: `exec /usr/bin/python3` na fonte `vaultai_dashboard.py`. Não há segundo bundle no repositório. `.venv/bin/python3` não abre a janela.
+Se o app instalado estiver desatualizado:
+
+```bash
+make install
+open ~/Applications/VaultAI.app
+```
+
+Verifique também se o processo já está rodando (`pgrep -fl VaultAI`). O app é um agente de menu bar: fechar a janela não encerra o processo.
 
 ### Sync automático não pausa / retoma
 
-O estado é persistido em `~/.vault/sync_paused`. Os botões Pausar/Retomar da janela (`vaultai_dashboard.py`) gravam ou apagam esse arquivo e chamam `launchctl` no agente do pipeline. Se falhar:
+O estado é persistido em `~/.vault/sync_paused`. O botão Pausar/Retomar do app grava ou apaga esse arquivo e para o timer nativo. O pipeline legado também respeita o arquivo. Se precisar fazer manualmente:
 
 ```bash
-# Pausar manualmente
+# Pausar
 touch ~/.vault/sync_paused
-launchctl bootout gui/$(id -u)/com.vaultai.pipeline
 
-# Retomar manualmente
+# Retomar
 rm -f ~/.vault/sync_paused
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vaultai.pipeline.plist
 
-# Log que a janela abre (Abrir log). O ícone escreve em ~/.vault/menubar.log.
+# Log aberto pelo botão "Abrir log"
 tail -f ~/.vault/pipeline.log
 ```
 
@@ -260,9 +300,9 @@ tail -100 ~/.vault/sync.log
 ```
 
 Problemas comuns:
-- Notes.app não está rodando (o script tenta abrir automaticamente)
-- Permissão de automação não concedida
-- Path do vault incorreto no `config.py`
+- Notes.app não está rodando (o app tenta abrir automaticamente)
+- Permissão de automação não concedida (Ajustes → Privacidade e Segurança → Automação)
+- Path do vault incorreto em `~/.vault/config.json`
 
 ### Links não estão sendo criados
 
