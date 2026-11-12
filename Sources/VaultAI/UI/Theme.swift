@@ -475,9 +475,9 @@ struct GradientProgressBar: View {
                                 .frame(width: band)
                                 .offset(x: -band + (geo.size.width + band) * cycle)
                         }
-                        .clipShape(Capsule())
                     }
                 }
+                .clipShape(Capsule())
             }
             .frame(height: 6)
         }
