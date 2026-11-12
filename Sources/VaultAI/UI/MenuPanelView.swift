@@ -70,14 +70,14 @@ struct MenuPanelView: View {
             }
 
             Spacer()
-            StatusPill(state: model.displayState, compact: true)
+            StatusPill(state: model.displayState, title: model.stateTitle, compact: true)
         }
     }
 
     private var menuRingSymbol: String? {
         guard model.percent == nil, model.displayState != .sincronizando else { return nil }
         switch model.displayState {
-        case .ok: return "checkmark"
+        case .ok: return model.snapshot.simulated ? "eye" : "checkmark"
         case .pausa: return "pause.fill"
         case .erro: return "exclamationmark"
         default: return "moon.zzz"

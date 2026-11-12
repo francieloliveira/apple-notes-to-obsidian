@@ -11,6 +11,35 @@ public struct PipelineResult: Sendable {
     }
 }
 
+/// Frase final do pipeline. Separada para poder testar o resumo sem tocar
+/// no Apple Notes — inclusive o caso de simulação, que não grava métricas.
+public enum PipelineSummary {
+    public static func make(counts: SyncCounts, links: Int, dryRun: Bool, skipped: Bool) -> String {
+        var parts: [String] = []
+        if counts.created > 0 { parts.append("\(counts.created) nova\(counts.created == 1 ? "" : "s")") }
+        if counts.updated > 0 { parts.append("\(counts.updated) atualizada\(counts.updated == 1 ? "" : "s")") }
+        if counts.blocked > 0 { parts.append("\(counts.blocked) secret(s) bloqueado(s)") }
+        if counts.errors > 0 { parts.append("\(counts.errors) erro\(counts.errors == 1 ? "" : "s")") }
+
+        let nothingToDo = dryRun
+            ? parts.isEmpty
+            : (skipped && parts.isEmpty)
+
+        var summary: String
+        if nothingToDo {
+            summary = dryRun ? "Simulação: nada a fazer" : "Sem mudanças no Apple Notes"
+        } else {
+            let base = parts.isEmpty ? "Tudo atualizado" : parts.joined(separator: "  ·  ")
+            summary = dryRun ? "Simulação: \(base)" : base
+        }
+
+        if links > 0 && !skipped {
+            summary += "  ·  \(links) link(s)"
+        }
+        return summary
+    }
+}
+
 /// Lock do pipeline. Guarda o PID do processo que está sincronizando para
 /// distinguir uma execução real de um lock deixado por um processo morto.
 public enum PipelineLock {
@@ -118,42 +147,60 @@ public final class Pipeline {
             return PipelineResult(ok: false, summary: "Organização falhou", elapsed: elapsed, error: "Organização falhou")
         }
 
-        var parts: [String] = []
-        if metrics.criadas > 0 { parts.append("\(metrics.criadas) nova\(metrics.criadas == 1 ? "" : "s")") }
-        if metrics.atualizadas > 0 { parts.append("\(metrics.atualizadas) atualizada\(metrics.atualizadas == 1 ? "" : "s")") }
-        if metrics.bloqueadas > 0 { parts.append("\(metrics.bloqueadas) secret(s) bloqueado(s)") }
-        if metrics.erros > 0 { parts.append("\(metrics.erros) erro\(metrics.erros == 1 ? "" : "s")") }
+        // Em dry run o metrics.json não é reescrito, então o resumo vem das
+        // contagens da própria simulação.
+        let counts = dryRun
+            ? sync.lastCounts
+            : SyncCounts(
+                created: metrics.criadas,
+                updated: metrics.atualizadas,
+                blocked: metrics.bloqueadas,
+                protected: metrics.protegidas,
+                errors: metrics.erros
+            )
 
-        let summary: String
-        if metrics.skipped && parts.isEmpty {
-            summary = "Sem mudanças no Apple Notes"
+        let summary = PipelineSummary.make(
+            counts: counts,
+            links: organize.linkadas,
+            dryRun: dryRun,
+            skipped: metrics.skipped
+        )
+
+        var payload: [String: Any]
+        if dryRun {
+            // A simulação não toca em metrics.json; o status leva a previsão
+            // marcada com dry_run para a UI mostrar como "simulado".
+            payload = [
+                "generated_at": Dates.isoString(),
+                "criadas": counts.created,
+                "atualizadas": counts.updated,
+                "protegidas": counts.protected,
+                "bloqueadas": counts.blocked,
+                "erros": counts.errors,
+                "skipped": false,
+                "dry_run": true
+            ]
         } else {
-            summary = parts.isEmpty ? "Tudo atualizado" : parts.joined(separator: "  ·  ")
+            payload = metrics.dictionary
         }
-
-        var fullSummary = summary
-        if organize.linkadas > 0 && !metrics.skipped {
-            fullSummary += "  ·  \(organize.linkadas) link(s)"
-        }
-
-        var payload = metrics.dictionary
         payload["organize"] = organize.dictionary
         payload["elapsed_s"] = elapsed
-        StateStore.writeStatus(config: config, state: "ok", message: fullSummary, metrics: payload)
+        StateStore.writeStatus(config: config, state: "ok", message: summary, metrics: payload)
 
-        let shouldNotify = !dryRun && !(metrics.skipped && parts.isEmpty && organize.linkadas == 0)
+        let hasCounts = counts.created > 0 || counts.updated > 0 || counts.blocked > 0 || counts.errors > 0
+        let shouldNotify = !dryRun && (!metrics.skipped || hasCounts || organize.linkadas > 0)
         if shouldNotify {
             Notifier.post(
                 title: "VaultAI",
                 subtitle: "concluído em \(Int(elapsed.rounded()))s",
-                message: fullSummary,
+                message: summary,
                 sound: "Glass"
             )
         }
 
         logger.log("=== PIPELINE CONCLUÍDO ===")
         logger.log(String(repeating: "=", count: 55))
-        return PipelineResult(ok: true, summary: fullSummary, elapsed: elapsed, error: nil)
+        return PipelineResult(ok: true, summary: summary, elapsed: elapsed, error: nil)
     }
 
     // MARK: - Lock

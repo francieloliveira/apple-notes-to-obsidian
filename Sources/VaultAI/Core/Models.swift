@@ -103,6 +103,8 @@ public struct DashboardSnapshot: Sendable {
     public var organize = OrganizeMetrics()
     public var paused = false
     public var lastSyncEpoch: Date?
+    /// Última execução foi um dry run (simulação): as métricas são previsão.
+    public var simulated = false
 
     public init() {}
 
@@ -146,6 +148,7 @@ public struct DashboardSnapshot: Sendable {
         case .erro:
             return text.isEmpty ? "Sync falhou" : text
         case .ok:
+            if simulated, !text.isEmpty { return text }
             if let pct = percent, pct < 100 { return "Parcial · \(pct)%" }
             return "Vault atualizado"
         case .idle:

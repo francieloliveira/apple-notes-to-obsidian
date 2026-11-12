@@ -66,6 +66,32 @@ final class VaultAITests: XCTestCase {
 
     // MARK: - Estado / lock
 
+    func testPipelineSummaryReportsSimulation() {
+        var counts = SyncCounts(created: 82, updated: 1)
+        XCTAssertEqual(
+            PipelineSummary.make(counts: counts, links: 0, dryRun: true, skipped: true),
+            "Simulação: 82 novas  ·  1 atualizada"
+        )
+
+        counts = SyncCounts()
+        XCTAssertEqual(
+            PipelineSummary.make(counts: counts, links: 0, dryRun: true, skipped: true),
+            "Simulação: nada a fazer"
+        )
+    }
+
+    func testPipelineSummaryKeepsRealRunWording() {
+        let counts = SyncCounts(created: 2, updated: 3)
+        XCTAssertEqual(
+            PipelineSummary.make(counts: counts, links: 4, dryRun: false, skipped: false),
+            "2 novas  ·  3 atualizadas  ·  4 link(s)"
+        )
+        XCTAssertEqual(
+            PipelineSummary.make(counts: SyncCounts(), links: 0, dryRun: false, skipped: true),
+            "Sem mudanças no Apple Notes"
+        )
+    }
+
     func testActivityDuringSyncIsAPhrase() {
         var snapshot = DashboardSnapshot()
         snapshot.rawState = "running"
@@ -162,6 +188,43 @@ final class VaultAITests: XCTestCase {
 
         XCTAssertFalse(StateStore.reconcileInterruptedRun(config: config))
         XCTAssertEqual(StateStore.snapshot(config: config).rawState, "running")
+    }
+
+    func testSnapshotPrefersSimulatedMetrics() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultai-sim-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let config = AppConfig(
+            vaultPath: root.appendingPathComponent("vault").path,
+            stateDir: root.appendingPathComponent("state").path
+        )
+
+        // Último sync real: nada mudou.
+        StateStore.writeEmptyMetrics(config: config)
+
+        // Simulação posterior: previsão de 82 novas + 1 atualizada.
+        StateStore.writeStatus(
+            config: config,
+            state: "ok",
+            message: "Simulação: 82 novas  ·  1 atualizada",
+            metrics: [
+                "generated_at": Dates.isoString(),
+                "criadas": 82,
+                "atualizadas": 1,
+                "protegidas": 0,
+                "bloqueadas": 0,
+                "erros": 0,
+                "skipped": false,
+                "dry_run": true
+            ]
+        )
+
+        let snapshot = StateStore.snapshot(config: config)
+        XCTAssertTrue(snapshot.simulated)
+        XCTAssertEqual(snapshot.sync.criadas, 82)
+        XCTAssertEqual(snapshot.sync.atualizadas, 1)
+        XCTAssertEqual(snapshot.activity, "Simulação: 82 novas  ·  1 atualizada")
     }
 
     // MARK: - Organizer

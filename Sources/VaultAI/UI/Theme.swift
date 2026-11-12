@@ -143,6 +143,7 @@ struct SectionLabel: View {
 
 struct StatusPill: View {
     let state: DisplayState
+    var title: String? = nil
     var compact = false
 
     private var color: Color { Theme.stateColor(state) }
@@ -153,7 +154,7 @@ struct StatusPill: View {
                 .fill(color)
                 .frame(width: compact ? 6 : 7, height: compact ? 6 : 7)
                 .shadow(color: color.opacity(0.9), radius: 5)
-            Text(state.title)
+            Text(title ?? state.title)
                 .font(.system(size: compact ? 10 : 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(color)
         }
@@ -446,7 +447,7 @@ struct GradientProgressBar: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(percent != nil ? Color.white.opacity(0.09) : color.opacity(0.20))
+                        .fill(percent != nil ? Color.white.opacity(0.09) : color.opacity(0.10))
 
                     if let percent {
                         Capsule()
@@ -458,11 +459,15 @@ struct GradientProgressBar: View {
                         TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                             let cycle = context.date.timeIntervalSinceReferenceDate
                                 .truncatingRemainder(dividingBy: 1.8) / 1.8
-                            let band = max(60, geo.size.width * 0.45)
+                            let band = max(80, geo.size.width * 0.5)
                             Capsule()
                                 .fill(
                                     LinearGradient(
-                                        colors: [color.opacity(0), color.opacity(0.9), color.opacity(0)],
+                                        stops: [
+                                            .init(color: color.opacity(0), location: 0),
+                                            .init(color: color, location: 0.5),
+                                            .init(color: color.opacity(0), location: 1)
+                                        ],
                                         startPoint: .leading,
                                         endPoint: .trailing
                                     )

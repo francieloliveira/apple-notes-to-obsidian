@@ -44,8 +44,10 @@ public enum StateStore {
 
         let statusMetrics = JSONFile.dict(status, "metrics")
         let metricsFile = JSONFile.object(at: config.metricsURL)
-        // Em caso de erro o status carrega as métricas mais recentes da tentativa.
-        let preferStatus = snapshot.rawState == "error" && !statusMetrics.isEmpty
+        // Em caso de erro o status carrega as métricas mais recentes da tentativa;
+        // em dry run as métricas do status são a previsão da simulação.
+        snapshot.simulated = JSONFile.bool(statusMetrics, "dry_run")
+        let preferStatus = (snapshot.rawState == "error" || snapshot.simulated) && !statusMetrics.isEmpty
         snapshot.sync = SyncMetrics.from(
             preferStatus ? statusMetrics : (metricsFile.isEmpty ? statusMetrics : metricsFile)
         )

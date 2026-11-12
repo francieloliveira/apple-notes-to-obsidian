@@ -62,7 +62,7 @@ struct DashboardView: View {
 
             VStack(alignment: .trailing, spacing: 7) {
                 HStack(spacing: 8) {
-                    StatusPill(state: model.displayState)
+                    StatusPill(state: model.displayState, title: model.stateTitle)
                     HeaderIconButton(icon: "gearshape.fill", help: "Ajustes") {
                         NSApp.activate(ignoringOtherApps: true)
                         openWindow(id: "settings")
@@ -95,13 +95,14 @@ struct DashboardView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(model.displayState.title)
+                        Text(model.stateTitle)
                             .font(Theme.font(20, .bold))
                             .foregroundStyle(.white)
 
                         Spacer()
 
-                        if let elapsed = model.snapshot.elapsed, elapsed >= 1 {
+                        if let elapsed = model.snapshot.elapsed, elapsed >= 1,
+                           model.displayState == .ok || model.displayState == .sincronizando {
                             Text("\(Int(elapsed.rounded()))s")
                                 .font(Theme.font(9, .semibold))
                                 .foregroundStyle(Theme.muted)
@@ -139,7 +140,7 @@ struct DashboardView: View {
     private var ringCaption: String {
         if model.percent != nil { return "progresso" }
         switch model.displayState {
-        case .ok: return "em dia"
+        case .ok: return model.snapshot.simulated ? "simulado" : "em dia"
         case .sincronizando: return "lendo"
         case .pausa: return "pausado"
         case .erro: return "atenção"
@@ -150,7 +151,7 @@ struct DashboardView: View {
     private var ringSymbol: String? {
         guard model.percent == nil, model.displayState != .sincronizando else { return nil }
         switch model.displayState {
-        case .ok: return "checkmark"
+        case .ok: return model.snapshot.simulated ? "eye" : "checkmark"
         case .pausa: return "pause.fill"
         case .erro: return "exclamationmark"
         default: return "moon.zzz"
@@ -172,17 +173,20 @@ struct DashboardView: View {
 
     private var metricsCard: some View {
         let sync = model.snapshot.sync
+        let simulated = model.snapshot.simulated
+        let chipText = simulated ? "simulado" : (sync.skipped ? "sem mudanças" : "delta")
+        let chipColor = simulated ? Theme.violet : (sync.skipped ? Theme.muted : Theme.green)
         return GlassCard(padding: 16) {
             VStack(spacing: 10) {
                 HStack {
                     SectionLabel(title: "Métricas do sync", icon: "chart.bar.fill")
                     Spacer()
-                    Text(sync.skipped ? "sem mudanças" : "delta")
+                    Text(chipText)
                         .font(Theme.font(9, .semibold))
-                        .foregroundStyle(sync.skipped ? Theme.muted : Theme.green)
+                        .foregroundStyle(chipColor)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .background(Capsule().fill((sync.skipped ? Theme.muted : Theme.green).opacity(0.12)))
+                        .background(Capsule().fill(chipColor.opacity(0.12)))
                 }
 
                 HStack(spacing: 8) {

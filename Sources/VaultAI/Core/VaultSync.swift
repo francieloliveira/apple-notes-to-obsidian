@@ -1,5 +1,23 @@
 import Foundation
 
+/// Contagens da última execução do sync. Em dry run nada é gravado em
+/// `metrics.json`, então o pipeline usa isto para resumir a simulação.
+public struct SyncCounts: Sendable {
+    public var created = 0
+    public var updated = 0
+    public var blocked = 0
+    public var protected = 0
+    public var errors = 0
+
+    public init(created: Int = 0, updated: Int = 0, blocked: Int = 0, protected: Int = 0, errors: Int = 0) {
+        self.created = created
+        self.updated = updated
+        self.blocked = blocked
+        self.protected = protected
+        self.errors = errors
+    }
+}
+
 /// Porta do `notes_to_obsidian.py`: exporta o Apple Notes para o vault Obsidian
 /// mantendo o mesmo estado em `~/.vault` (checkpoint, paths, aliases, secrets).
 public final class VaultSync {
@@ -8,6 +26,8 @@ public final class VaultSync {
     private let logger: VaultLogger
     private let renderer = MarkdownRenderer()
     private let progressLock = NSLock()
+
+    public private(set) var lastCounts = SyncCounts()
 
     public var onProgress: ((ProgressInfo) -> Void)?
     public var onLog: ((String) -> Void)?
@@ -29,8 +49,11 @@ public final class VaultSync {
         log("=== sync iniciado\(dryRun ? " [DRY RUN]" : "") ===")
 
         if !full, !notesDBChanged() {
-            JSONFile.write(["generated_at": Dates.isoString(), "paths": [String]()], to: config.dirtyURL)
-            StateStore.writeEmptyMetrics(config: config)
+            if !dryRun {
+                JSONFile.write(["generated_at": Dates.isoString(), "paths": [String]()], to: config.dirtyURL)
+                StateStore.writeEmptyMetrics(config: config)
+            }
+            lastCounts = SyncCounts()
             log("=== sync concluido (sem mudanças) ===")
             return true
         }
@@ -103,6 +126,13 @@ public final class VaultSync {
 
             if pending.isEmpty {
                 log("     Todas as notas já gravadas (via checkpoint).")
+                lastCounts = SyncCounts(
+                    created: created,
+                    updated: updated,
+                    blocked: blocked,
+                    protected: protected,
+                    errors: errors
+                )
                 if !dryRun {
                     state["_last_sync_epoch"] = Date().timeIntervalSince1970
                     JSONFile.write(state, to: config.stateFileURL)
@@ -259,6 +289,13 @@ public final class VaultSync {
                 }
             }
 
+            lastCounts = SyncCounts(
+                created: created,
+                updated: updated,
+                blocked: blocked,
+                protected: protected,
+                errors: errors
+            )
             log("     criadas:\(created)  atualizadas:\(updated)  protegidas:\(protected)  bloqueadas:\(blocked)  erros:\(errors)")
             log("=== sync concluido ===")
             return errors == 0

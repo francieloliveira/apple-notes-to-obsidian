@@ -47,6 +47,11 @@ final class AppModel: ObservableObject {
 
     var stateColor: Color { Theme.stateColor(displayState) }
 
+    var stateTitle: String {
+        if snapshot.simulated, displayState == .ok { return "Simulado" }
+        return displayState.title
+    }
+
     var percent: Int? { snapshot.percent }
 
     var activityText: String {
@@ -104,7 +109,7 @@ final class AppModel: ObservableObject {
             self.refresh()
 
             if result.ok {
-                self.showToast(dryRun ? "Simulação concluída" : result.summary)
+                self.showToast(result.summary)
             } else {
                 self.errorMessage = result.error ?? "Sync falhou"
             }
