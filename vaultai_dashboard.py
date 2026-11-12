@@ -632,7 +632,7 @@ class VaultWindow:
         if x2 - x1 < 2:
             return
         radius = max(1, (y2 - y1) // 2)
-        canvas.create_oval(x1, y1, x1 + radius * 2, y2, fill=fill, outline="")
+        canvas.create_oval(x1, y1, x1 + radius * 2, y2, fill=fill, outline=fill)
         canvas.create_oval(x2 - radius * 2, y1, x2, y2, fill=fill, outline="")
         canvas.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline="")
 
