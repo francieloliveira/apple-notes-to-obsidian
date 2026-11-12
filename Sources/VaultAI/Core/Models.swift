@@ -105,6 +105,9 @@ public struct DashboardSnapshot: Sendable {
     public var lastSyncEpoch: Date?
     /// Última execução foi um dry run (simulação): as métricas são previsão.
     public var simulated = false
+    /// A última execução não gravou nada porque o Notes não mudou; as métricas
+    /// continuam sendo o delta do último sync real.
+    public var lastRunSkipped = false
 
     public init() {}
 
@@ -148,7 +151,7 @@ public struct DashboardSnapshot: Sendable {
         case .erro:
             return text.isEmpty ? "Sync falhou" : text
         case .ok:
-            if simulated, !text.isEmpty { return text }
+            if (simulated || lastRunSkipped), !text.isEmpty { return text }
             if let pct = percent, pct < 100 { return "Parcial · \(pct)%" }
             return "Vault atualizado"
         case .idle:

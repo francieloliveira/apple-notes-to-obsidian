@@ -147,23 +147,16 @@ public final class Pipeline {
             return PipelineResult(ok: false, summary: "Organização falhou", elapsed: elapsed, error: "Organização falhou")
         }
 
-        // Em dry run o metrics.json não é reescrito, então o resumo vem das
-        // contagens da própria simulação.
-        let counts = dryRun
-            ? sync.lastCounts
-            : SyncCounts(
-                created: metrics.criadas,
-                updated: metrics.atualizadas,
-                blocked: metrics.bloqueadas,
-                protected: metrics.protegidas,
-                errors: metrics.erros
-            )
+        // As contagens vêm da execução atual (dry run ou real). No skip elas são
+        // zero, então o resumo diz "sem mudanças" sem repetir o delta anterior.
+        let counts = sync.lastCounts
+        let skipped = sync.lastSkipped
 
         let summary = PipelineSummary.make(
             counts: counts,
             links: organize.linkadas,
             dryRun: dryRun,
-            skipped: metrics.skipped
+            skipped: skipped
         )
 
         var payload: [String: Any]
@@ -182,13 +175,15 @@ public final class Pipeline {
             ]
         } else {
             payload = metrics.dictionary
+            payload["skipped"] = skipped
         }
         payload["organize"] = organize.dictionary
         payload["elapsed_s"] = elapsed
         StateStore.writeStatus(config: config, state: "ok", message: summary, metrics: payload)
 
-        let hasCounts = counts.created > 0 || counts.updated > 0 || counts.blocked > 0 || counts.errors > 0
-        let shouldNotify = !dryRun && (!metrics.skipped || hasCounts || organize.linkadas > 0)
+        let hasCounts = counts.created > 0 || counts.updated > 0
+            || counts.blocked > 0 || counts.protected > 0 || counts.errors > 0
+        let shouldNotify = !dryRun && (hasCounts || organize.linkadas > 0)
         if shouldNotify {
             Notifier.post(
                 title: "VaultAI",

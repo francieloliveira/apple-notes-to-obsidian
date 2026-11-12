@@ -28,6 +28,8 @@ public final class VaultSync {
     private let progressLock = NSLock()
 
     public private(set) var lastCounts = SyncCounts()
+    /// O sync saiu cedo porque o banco do Notes não mudou desde a última vez.
+    public private(set) var lastSkipped = false
 
     public var onProgress: ((ProgressInfo) -> Void)?
     public var onLog: ((String) -> Void)?
@@ -49,11 +51,14 @@ public final class VaultSync {
         log("=== sync iniciado\(dryRun ? " [DRY RUN]" : "") ===")
 
         if !full, !notesDBChanged() {
+            // Mantém o metrics.json intacto: o painel segue mostrando o delta do
+            // último sync que realmente gravou algo, e o status marca que esta
+            // execução não teve mudanças.
             if !dryRun {
                 JSONFile.write(["generated_at": Dates.isoString(), "paths": [String]()], to: config.dirtyURL)
-                StateStore.writeEmptyMetrics(config: config)
             }
             lastCounts = SyncCounts()
+            lastSkipped = true
             log("=== sync concluido (sem mudanças) ===")
             return true
         }

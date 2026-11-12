@@ -47,6 +47,7 @@ public enum StateStore {
         // Em caso de erro o status carrega as métricas mais recentes da tentativa;
         // em dry run as métricas do status são a previsão da simulação.
         snapshot.simulated = JSONFile.bool(statusMetrics, "dry_run")
+        snapshot.lastRunSkipped = JSONFile.bool(statusMetrics, "skipped")
         let preferStatus = (snapshot.rawState == "error" || snapshot.simulated) && !statusMetrics.isEmpty
         snapshot.sync = SyncMetrics.from(
             preferStatus ? statusMetrics : (metricsFile.isEmpty ? statusMetrics : metricsFile)

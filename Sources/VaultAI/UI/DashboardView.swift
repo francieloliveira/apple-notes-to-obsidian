@@ -174,8 +174,21 @@ struct DashboardView: View {
     private var metricsCard: some View {
         let sync = model.snapshot.sync
         let simulated = model.snapshot.simulated
-        let chipText = simulated ? "simulado" : (sync.skipped ? "sem mudanças" : "delta")
-        let chipColor = simulated ? Theme.violet : (sync.skipped ? Theme.muted : Theme.green)
+        let chipText: String
+        let chipColor: Color
+        if simulated {
+            chipText = "simulado"
+            chipColor = Theme.violet
+        } else if model.snapshot.lastRunSkipped {
+            chipText = "último sync"
+            chipColor = Theme.muted
+        } else if sync.skipped {
+            chipText = "sem mudanças"
+            chipColor = Theme.muted
+        } else {
+            chipText = "delta"
+            chipColor = Theme.green
+        }
         return GlassCard(padding: 16) {
             VStack(spacing: 10) {
                 HStack {

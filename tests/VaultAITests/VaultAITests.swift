@@ -227,6 +227,80 @@ final class VaultAITests: XCTestCase {
         XCTAssertEqual(snapshot.activity, "Simulação: 82 novas  ·  1 atualizada")
     }
 
+    func testSkippedRunKeepsLastDelta() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultai-skip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let config = AppConfig(
+            vaultPath: root.appendingPathComponent("vault").path,
+            stateDir: root.appendingPathComponent("state").path
+        )
+
+        // Último sync real gravou 82 novas + 1 atualizada.
+        var metrics = SyncMetrics()
+        metrics.criadas = 82
+        metrics.atualizadas = 1
+        JSONFile.write(metrics.dictionary, to: config.metricsURL)
+
+        // Depois disso, uma execução pulou porque o Notes não mudou.
+        var statusMetrics = metrics.dictionary
+        statusMetrics["skipped"] = true
+        StateStore.writeStatus(
+            config: config,
+            state: "ok",
+            message: "Sem mudanças no Apple Notes",
+            metrics: statusMetrics
+        )
+
+        let snapshot = StateStore.snapshot(config: config)
+        XCTAssertEqual(snapshot.sync.criadas, 82)
+        XCTAssertEqual(snapshot.sync.atualizadas, 1)
+        XCTAssertTrue(snapshot.lastRunSkipped)
+        XCTAssertEqual(snapshot.activity, "Sem mudanças no Apple Notes")
+    }
+
+    func testSkippedSyncKeepsMetricsFile() throws {
+        let db = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Group Containers/group.com.apple.notes/NoteStore.sqlite")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: db.path),
+            "Apple Notes não instalado nesta máquina"
+        )
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultai-sync-skip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let config = AppConfig(
+            vaultPath: root.appendingPathComponent("vault").path,
+            stateDir: root.appendingPathComponent("state").path
+        )
+
+        // Último sync real gravou 82 novas + 1 atualizada.
+        var metrics = SyncMetrics()
+        metrics.criadas = 82
+        metrics.atualizadas = 1
+        JSONFile.write(metrics.dictionary, to: config.metricsURL)
+
+        // Marca o banco do Notes como já visto, forçando o caminho de skip.
+        JSONFile.write(
+            ["_last_sync_epoch": Date().timeIntervalSince1970 + 86_400],
+            to: config.stateFileURL
+        )
+
+        let sync = VaultSync(
+            config: config,
+            logger: VaultLogger(fileURL: root.appendingPathComponent("sync.log"))
+        )
+        XCTAssertTrue(sync.run(full: false, dryRun: false, verbose: false))
+        XCTAssertTrue(sync.lastSkipped)
+
+        let saved = StateStore.readMetrics(config: config)
+        XCTAssertEqual(saved.criadas, 82)
+        XCTAssertEqual(saved.atualizadas, 1)
+    }
+
     // MARK: - Organizer
 
     private func makeVault(_ files: [String: String]) throws -> (root: URL, vault: URL, state: URL) {
