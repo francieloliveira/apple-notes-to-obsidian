@@ -3,6 +3,7 @@ import AppKit
 
 struct DashboardView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var router: SettingsRouter
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -240,6 +241,26 @@ struct DashboardView: View {
                     MetricTile(icon: "square.grid.2x2.fill", title: "MOCs", value: organize.mocs, color: Theme.violet)
                     MetricTile(icon: "trash.fill", title: "Lixo", value: organize.lixo, color: Theme.amber)
                 }
+
+                Button {
+                    NSApp.activate(ignoringOtherApps: true)
+                    router.open(.domains)
+                    openWindow(id: "settings")
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("Gerenciar domínios")
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 7, weight: .bold))
+                    }
+                    .font(Theme.font(9.5, .semibold))
+                    .foregroundStyle(Theme.violet)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Adicionar, editar ou remover domínios dos MOCs")
             }
         }
     }

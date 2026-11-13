@@ -301,6 +301,47 @@ final class VaultAITests: XCTestCase {
         XCTAssertEqual(saved.atualizadas, 1)
     }
 
+    // MARK: - Domínios
+
+    func testDomainNameIsNormalized() {
+        XCTAssertEqual(DomainCatalog.normalizeName("  Viagens  "), "viagens")
+        XCTAssertEqual(DomainCatalog.normalizeName("Machine   Learning"), "machine learning")
+    }
+
+    func testDomainKeywordsAcceptCommonSeparators() {
+        XCTAssertEqual(
+            DomainCatalog.parseKeywords("Python, java; Docker · python ,  "),
+            ["python", "java", "docker"]
+        )
+        XCTAssertEqual(DomainCatalog.parseKeywords(" , ; · "), [])
+    }
+
+    func testDomainRenameMovesKeywords() {
+        var domains = ["tech": ["python"]]
+        XCTAssertNil(
+            DomainCatalog.apply(name: " Dev ", keywordsText: "swift, ios", original: "tech", to: &domains)
+        )
+        XCTAssertNil(domains["tech"])
+        XCTAssertEqual(domains["dev"], ["swift", "ios"])
+    }
+
+    func testDomainRejectsInvalidEdits() {
+        var domains = ["tech": ["python"]]
+        XCTAssertEqual(
+            DomainCatalog.apply(name: "TECH", keywordsText: "x", original: nil, to: &domains),
+            .duplicate("tech")
+        )
+        XCTAssertEqual(
+            DomainCatalog.apply(name: "a/b", keywordsText: "x", original: nil, to: &domains),
+            .invalidCharacters
+        )
+        XCTAssertEqual(
+            DomainCatalog.apply(name: "   ", keywordsText: "x", original: nil, to: &domains),
+            .emptyName
+        )
+        XCTAssertEqual(domains, ["tech": ["python"]])
+    }
+
     // MARK: - Organizer
 
     private func makeVault(_ files: [String: String]) throws -> (root: URL, vault: URL, state: URL) {

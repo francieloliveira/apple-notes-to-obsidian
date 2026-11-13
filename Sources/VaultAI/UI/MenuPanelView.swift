@@ -71,6 +71,11 @@ struct MenuPanelView: View {
 
             Spacer()
             StatusPill(state: model.displayState, title: model.stateTitle, compact: true)
+
+            HeaderIconButton(icon: "gearshape.fill", help: "Ajustes") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "settings")
+            }
         }
     }
 

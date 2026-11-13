@@ -5,12 +5,14 @@ import AppKit
 struct VaultAIApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
+    @StateObject private var router = SettingsRouter()
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         Window("VaultAI", id: "dashboard") {
             DashboardView()
                 .environmentObject(model)
+                .environmentObject(router)
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)
@@ -36,6 +38,7 @@ struct VaultAIApp: App {
         MenuBarExtra {
             MenuPanelView()
                 .environmentObject(model)
+                .environmentObject(router)
         } label: {
             Image(systemName: model.menuBarIcon)
         }
@@ -44,6 +47,7 @@ struct VaultAIApp: App {
         Window("Ajustes", id: "settings") {
             SettingsView()
                 .environmentObject(model)
+                .environmentObject(router)
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)
